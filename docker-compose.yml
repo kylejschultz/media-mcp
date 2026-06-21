@@ -1,0 +1,14 @@
+services:
+  media-mcp:
+    build: .
+    image: media-mcp:local
+    env_file:
+      - .env
+    networks:
+      - media
+    stdin_open: true
+
+networks:
+  media:
+    external: true
+    name: docker-network
