@@ -12,7 +12,7 @@ cp .env.example .env
 npm run build
 ```
 
-Fill in the `*_URL` and `*_API_KEY` values in `.env`.
+Fill in the `*_URL` and `*_API_KEY` values in `.env` for local development.
 
 If you run this alongside the existing media containers, use Docker so the MCP server can join `docker-network` and resolve `sonarr`, `radarr`, and `sabnzbd` by container name:
 
@@ -20,6 +20,8 @@ If you run this alongside the existing media containers, use Docker so the MCP s
 docker pull ghcr.io/kylejschultz/media-mcp:latest
 docker compose up -d
 ```
+
+Container deployments load `/config/.env`, so mount appdata to `/config`.
 
 For local development, build and run from source:
 
@@ -38,8 +40,10 @@ services:
   media-mcp:
     image: ghcr.io/kylejschultz/media-mcp:latest
     container_name: media-mcp
-    env_file:
-      - /mnt/user/appdata/media-stack/media-mcp/.env
+    environment:
+      - TZ=America/Los_Angeles
+    volumes:
+      - /mnt/user/appdata/media-stack/media-mcp:/config
     networks:
       - docker-network
     stdin_open: true

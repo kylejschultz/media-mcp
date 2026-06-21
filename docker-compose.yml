@@ -1,8 +1,11 @@
 services:
   media-mcp:
     image: ghcr.io/kylejschultz/media-mcp:latest
-    env_file:
-      - .env
+    container_name: media-mcp
+    environment:
+      - TZ=America/Los_Angeles
+    volumes:
+      - /mnt/user/appdata/media-stack/media-mcp:/config
     networks:
       - media
     stdin_open: true

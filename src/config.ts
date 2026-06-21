@@ -1,4 +1,18 @@
-import "dotenv/config";
+import { existsSync } from "node:fs";
+import { config as loadEnv } from "dotenv";
+
+const envFiles = [
+  process.env.MEDIA_MCP_ENV_FILE,
+  "/config/.env",
+  ".env",
+].filter((path): path is string => Boolean(path));
+
+for (const path of envFiles) {
+  if (existsSync(path)) {
+    loadEnv({ path, override: false, quiet: true });
+    break;
+  }
+}
 
 export type AppName = "sonarr" | "radarr" | "lidarr" | "prowlarr" | "sabnzbd";
 
