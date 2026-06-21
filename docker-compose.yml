@@ -1,12 +1,12 @@
 services:
   media-mcp:
-    build: .
-    image: media-mcp:local
+    image: ghcr.io/kylejschultz/media-mcp:latest
     env_file:
       - .env
     networks:
       - media
     stdin_open: true
+    restart: unless-stopped
 
 networks:
   media:

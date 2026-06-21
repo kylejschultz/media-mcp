@@ -17,15 +17,43 @@ Fill in the `*_URL` and `*_API_KEY` values in `.env`.
 If you run this alongside the existing media containers, use Docker so the MCP server can join `docker-network` and resolve `sonarr`, `radarr`, and `sabnzbd` by container name:
 
 ```bash
-docker compose build
-docker compose run --rm media-mcp
+docker pull ghcr.io/kylejschultz/media-mcp:latest
+docker compose up -d
 ```
 
-For a local host run, use host-reachable URLs in `.env`, then run:
+For local development, build and run from source:
 
 ```bash
+npm install
 npm run smoke
 npm start
+```
+
+## Unraid Compose
+
+Use this service inside the existing media-stack compose, on the same `docker-network` as the media apps:
+
+```yaml
+services:
+  media-mcp:
+    image: ghcr.io/kylejschultz/media-mcp:latest
+    container_name: media-mcp
+    env_file:
+      - /mnt/user/appdata/media-stack/media-mcp/.env
+    networks:
+      - docker-network
+    stdin_open: true
+    restart: unless-stopped
+
+networks:
+  docker-network:
+    external: true
+```
+
+If the GHCR package is private, log in on Unraid first:
+
+```bash
+docker login ghcr.io -u kylejschultz
 ```
 
 ## MCP Config
