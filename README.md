@@ -77,6 +77,16 @@ Example stdio config:
 
 ## Tools
 
+- `media_stack_overview` - compact dashboard across status, health, queues, missing media, disk space, indexers, library counts, and import issues.
+- `service_status` - normalized reachability/auth/version checks.
+- `service_health` - health issues from configured services.
+- `disk_space` - service-visible disk space from Arr applications.
+- `download_queue` - normalized queue items across Sonarr, Radarr, Lidarr, and SABnzbd.
+- `recent_activity` - normalized recent history/activity.
+- `get_missing_summary` - missing wanted counts and samples.
+- `indexer_status` - Prowlarr indexer status without credentials.
+- `get_library_counts` - Sonarr/Radarr/Lidarr library counts.
+- `get_import_issues` - queue/import warnings and failed recent history.
 - `media_configured_apps` - list configured apps and missing env vars.
 - `media_system_status` - fetch app version/status.
 - `media_queue` - show download/processing queue for Sonarr, Radarr, Lidarr, or SABnzbd.

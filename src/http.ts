@@ -38,6 +38,7 @@ export async function arrGet<T>(app: AppConfig, path: string, params: Record<str
   }
 
   const response = await fetch(url, {
+    signal: AbortSignal.timeout(10_000),
     headers: {
       "X-Api-Key": app.apiKey,
       Accept: "application/json",
@@ -57,7 +58,7 @@ export async function sabGet<T>(app: AppConfig, mode: string, params: Record<str
     if (value !== undefined) url.searchParams.set(key, String(value));
   }
 
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const response = await fetch(url, { signal: AbortSignal.timeout(10_000), headers: { Accept: "application/json" } });
   return readJson<T>(response, app.label);
 }
 
