@@ -16,4 +16,5 @@ RUN npm ci --omit=dev
 COPY --from=build /app/dist ./dist
 RUN mkdir -p /config
 VOLUME ["/config"]
+EXPOSE 3000
 ENTRYPOINT ["node", "dist/index.js"]

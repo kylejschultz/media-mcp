@@ -23,6 +23,17 @@ docker compose up -d
 
 Container deployments load `/config/.env`, so mount appdata to `/config`.
 
+By default the binary still uses stdio for MCP clients that launch the process directly. Set `MEDIA_MCP_TRANSPORT=http` to run it as a persistent Streamable HTTP service:
+
+```bash
+MEDIA_MCP_TRANSPORT=http MEDIA_MCP_HTTP_PORT=3000 npm start
+```
+
+HTTP mode exposes:
+
+- `GET /health` - simple container health check.
+- `/mcp` - MCP Streamable HTTP endpoint for clients.
+
 For local development, build and run from source:
 
 ```bash
@@ -42,11 +53,14 @@ services:
     container_name: media-mcp
     environment:
       - TZ=America/Los_Angeles
+      - MEDIA_MCP_TRANSPORT=http
+      - MEDIA_MCP_HTTP_PORT=3000
+    ports:
+      - "3000:3000"
     volumes:
       - /mnt/user/appdata/media-stack/media-mcp:/config
     networks:
       - docker-network
-    stdin_open: true
     restart: unless-stopped
 
 networks:
@@ -69,7 +83,27 @@ Example stdio config:
   "mcpServers": {
     "media": {
       "command": "docker",
-      "args": ["compose", "-f", "/Volumes/dockerDisk/media-mcp/docker-compose.yml", "run", "--rm", "-T", "media-mcp"]
+      "args": [
+        "compose",
+        "-f",
+        "/Volumes/dockerDisk/media-mcp/docker-compose.yml",
+        "run",
+        "--rm",
+        "-T",
+        "media-mcp"
+      ]
+    }
+  }
+}
+```
+
+Example Streamable HTTP config:
+
+```json
+{
+  "mcpServers": {
+    "media": {
+      "url": "http://10.10.10.10:3000/mcp"
     }
   }
 }
