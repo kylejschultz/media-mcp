@@ -31,8 +31,15 @@ MEDIA_MCP_TRANSPORT=http MEDIA_MCP_HTTP_PORT=3000 npm start
 
 HTTP mode exposes:
 
-- `GET /health` - simple container health check.
+- `GET /health` - container health check with configured app summary.
 - `/mcp` - MCP Streamable HTTP endpoint for clients.
+
+By default HTTP mode allows browser clients from any origin. To restrict that,
+set `MEDIA_MCP_ALLOWED_ORIGINS` to a comma-separated list:
+
+```bash
+MEDIA_MCP_ALLOWED_ORIGINS=http://10.10.10.10:3000,http://localhost:6274
+```
 
 For local development, build and run from source:
 
@@ -55,6 +62,8 @@ services:
       - TZ=America/Los_Angeles
       - MEDIA_MCP_TRANSPORT=http
       - MEDIA_MCP_HTTP_PORT=3000
+      # Optional: restrict browser clients instead of allowing any origin.
+      # - MEDIA_MCP_ALLOWED_ORIGINS=http://10.10.10.10:3000
     ports:
       - "3000:3000"
     volumes:
@@ -108,6 +117,19 @@ Example Streamable HTTP config:
   }
 }
 ```
+
+## HTTP Smoke Test
+
+After the container starts on Unraid:
+
+```bash
+curl http://10.10.10.10:3000/health
+MEDIA_MCP_SMOKE_URL=http://10.10.10.10:3000/mcp npm run smoke:http
+```
+
+The HTTP smoke test performs a real MCP initialize and `tools/list` request over
+Streamable HTTP. It does not call the media APIs, so it is safe to run before the
+service API keys are fully wired.
 
 ## Tools
 
