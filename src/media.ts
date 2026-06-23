@@ -44,6 +44,52 @@ function toSummary<T extends { summary: string }>(result: T): T {
   return result;
 }
 
+type ViewTone = "ok" | "info" | "warning" | "error";
+
+type ViewMetric = {
+  label: string;
+  value: string | number;
+  tone?: ViewTone;
+};
+
+type ViewItem = {
+  label: string;
+  value?: string | number | boolean;
+  detail?: string;
+  tone?: ViewTone;
+};
+
+type ViewCard = {
+  id: string;
+  title: string;
+  tone?: ViewTone;
+  metrics?: ViewMetric[];
+  items?: ViewItem[];
+};
+
+type ComponentView = {
+  schema: "media-mcp.view.v1";
+  title: string;
+  summary: string;
+  cards: ViewCard[];
+};
+
+function componentView(title: string, summary: string, cards: ViewCard[]): ComponentView {
+  return { schema: "media-mcp.view.v1", title, summary, cards };
+}
+
+function countTone(count: number, warningAt = 1): ViewTone {
+  return count >= warningAt ? "warning" : "ok";
+}
+
+function healthTone(warnings: unknown[] = []): ViewTone {
+  return warnings.length > 0 ? "warning" : "ok";
+}
+
+function serviceLabel(service: string) {
+  return apps.find((app) => app.name === service)?.label ?? service;
+}
+
 type OperationResult<T> =
   | { app: AppName; label: string; ok: true; latencyMs: number; data: T }
   | { app: AppName; label: string; ok: false; latencyMs: number; error: string; operation: string };
@@ -126,8 +172,26 @@ export async function serviceStatus(appName?: AppName) {
 
   const missing = configuredApps().filter((app) => !app.configured);
   const okCount = services.filter((service) => service.reachable && service.authenticated).length;
+  const summary = `${okCount}/${services.length} configured services are reachable. ${missing.length} services have missing env config.`;
   return toSummary({
-    summary: `${okCount}/${services.length} configured services are reachable. ${missing.length} services have missing env config.`,
+    summary,
+    view: componentView("Service Status", summary, [
+      {
+        id: "reachability",
+        title: "Reachability",
+        tone: okCount === services.length && missing.length === 0 ? "ok" : "warning",
+        metrics: [
+          { label: "Reachable", value: `${okCount}/${services.length}`, tone: okCount === services.length ? "ok" : "warning" },
+          { label: "Missing Config", value: missing.length, tone: countTone(missing.length) },
+        ],
+        items: services.map((service) => ({
+          label: service.label,
+          value: service.version ?? (service.reachable ? "reachable" : "offline"),
+          detail: service.warnings?.[0],
+          tone: service.reachable && service.authenticated && service.warnings.length === 0 ? "ok" : "warning",
+        })),
+      },
+    ]),
     services,
     missing,
   });
@@ -164,8 +228,23 @@ export async function serviceHealth(appName?: AppName) {
     }),
   );
   const issueCount = services.reduce((sum, service) => sum + service.issues.length, 0);
+  const summary = issueCount === 0 ? "No health issues reported by configured services." : `${issueCount} health issues reported.`;
   return toSummary({
-    summary: issueCount === 0 ? "No health issues reported by configured services." : `${issueCount} health issues reported.`,
+    summary,
+    view: componentView("Service Health", summary, [
+      {
+        id: "health",
+        title: "Health",
+        tone: countTone(issueCount),
+        metrics: [{ label: "Issues", value: issueCount, tone: countTone(issueCount) }],
+        items: services.map((service) => ({
+          label: serviceLabel(service.service),
+          value: service.health,
+          detail: service.issues[0]?.message,
+          tone: service.ok ? "ok" : service.health === "error" ? "error" : "warning",
+        })),
+      },
+    ]),
     services,
   });
 }
@@ -200,8 +279,25 @@ export async function diskSpace() {
   const low = services.flatMap((service) =>
     service.paths.filter((path) => typeof path.usedPercent === "number" && path.usedPercent >= 90).map((path) => `${service.service}:${path.path}`),
   );
+  const summary = low.length === 0 ? "No service-visible disks are above 90% used." : `${low.length} service-visible paths are above 90% used.`;
   return toSummary({
-    summary: low.length === 0 ? "No service-visible disks are above 90% used." : `${low.length} service-visible paths are above 90% used.`,
+    summary,
+    view: componentView("Disk Space", summary, [
+      {
+        id: "disks",
+        title: "Service-Visible Paths",
+        tone: countTone(low.length),
+        metrics: [{ label: "90%+ Used", value: low.length, tone: countTone(low.length) }],
+        items: services.flatMap((service) =>
+          service.paths.map((path) => ({
+            label: `${serviceLabel(service.service)} ${path.label ?? path.path}`,
+            value: path.usedPercent === undefined ? "unknown" : `${path.usedPercent}%`,
+            detail: path.path,
+            tone: typeof path.usedPercent === "number" && path.usedPercent >= 90 ? "warning" : "ok",
+          })),
+        ),
+      },
+    ]),
     services,
     warnings: low,
   });
@@ -261,8 +357,23 @@ export async function downloadQueue(appName?: QueueAppName, pageSize = 50) {
     }),
   );
   const total = services.reduce((sum, service) => sum + Number(service.total ?? 0), 0);
+  const summary = total === 0 ? "No active queue items reported." : `${total} queue items reported across ${services.length} services.`;
   return toSummary({
-    summary: total === 0 ? "No active queue items reported." : `${total} queue items reported across ${services.length} services.`,
+    summary,
+    view: componentView("Download Queue", summary, [
+      {
+        id: "queue",
+        title: "Queue",
+        tone: countTone(total),
+        metrics: [{ label: "Items", value: total, tone: countTone(total) }],
+        items: services.map((service) => ({
+          label: serviceLabel(service.service),
+          value: service.total,
+          detail: service.items[0]?.title,
+          tone: service.warnings?.length ? "warning" : service.total > 0 ? "info" : "ok",
+        })),
+      },
+    ]),
     services,
   });
 }
@@ -342,8 +453,23 @@ export async function missingSummary(pageSize = 10) {
     }),
   );
   const total = services.reduce((sum, service) => sum + Number(service.total ?? 0), 0);
+  const summary = `${total} missing wanted items reported across Sonarr/Radarr/Lidarr.`;
   return toSummary({
-    summary: `${total} missing wanted items reported across Sonarr/Radarr/Lidarr.`,
+    summary,
+    view: componentView("Missing Media", summary, [
+      {
+        id: "missing",
+        title: "Wanted Missing",
+        tone: countTone(total),
+        metrics: [{ label: "Missing", value: total, tone: countTone(total) }],
+        items: services.map((service) => ({
+          label: serviceLabel(service.service),
+          value: service.total,
+          detail: service.sample[0]?.title ?? service.warnings?.[0],
+          tone: service.warnings?.length ? "warning" : service.total > 0 ? "info" : "ok",
+        })),
+      },
+    ]),
     services,
   });
 }
@@ -363,8 +489,23 @@ export async function libraryCounts() {
   };
   const results = [sonarrSeries, radarrMovies, lidarrArtists, lidarrAlbums];
   const warnings = results.filter((result) => !result.ok).map((result) => `${result.app}: ${result.error}`);
+  const loaded = Object.values(counts).filter((value) => value !== undefined).length;
+  const summary = `Library counts loaded for ${loaded}/4 categories.`;
   return toSummary({
-    summary: `Library counts loaded for ${Object.values(counts).filter((value) => value !== undefined).length}/4 categories.`,
+    summary,
+    view: componentView("Library Counts", summary, [
+      {
+        id: "libraries",
+        title: "Libraries",
+        tone: healthTone(warnings),
+        metrics: [
+          { label: "Series", value: counts.sonarrSeries ?? "unknown" },
+          { label: "Movies", value: counts.radarrMovies ?? "unknown" },
+          { label: "Artists", value: counts.lidarrArtists ?? "unknown" },
+          { label: "Albums", value: counts.lidarrAlbums ?? "unknown" },
+        ],
+      },
+    ]),
     counts,
     warnings,
   });
@@ -393,8 +534,29 @@ export async function importIssues(pageSize = 50) {
       .map((item) => ({ service: service.service, title: item.title, eventType: item.eventType, date: item.date })),
   );
 
+  const summary = `${queueIssues.length} queue/import warnings and ${failedHistory.length} failed recent history items found.`;
   return toSummary({
-    summary: `${queueIssues.length} queue/import warnings and ${failedHistory.length} failed recent history items found.`,
+    summary,
+    view: componentView("Import Issues", summary, [
+      {
+        id: "issues",
+        title: "Issues",
+        tone: queueIssues.length + failedHistory.length > 0 ? "warning" : "ok",
+        metrics: [
+          { label: "Queue Warnings", value: queueIssues.length, tone: countTone(queueIssues.length) },
+          { label: "Failed History", value: failedHistory.length, tone: countTone(failedHistory.length) },
+        ],
+        items: [...queueIssues, ...failedHistory].slice(0, 8).map((issue) => {
+          const record = issue as AnyRecord;
+          return {
+            label: serviceLabel(record.service),
+            value: record.eventType ?? record.trackedDownloadStatus ?? record.status ?? "issue",
+            detail: record.title,
+            tone: "warning",
+          };
+        }),
+      },
+    ]),
     queueIssues,
     failedHistory,
   });
@@ -409,8 +571,27 @@ export async function indexerStatus() {
   ]);
   const indexerList = indexers.ok ? indexers.data : [];
   const disabled = indexerStatuses.ok ? indexerStatuses.data.filter((status) => status.disabledTill || status.mostRecentFailure) : [];
+  const warnings = [health, indexers, indexerStatuses].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`);
+  const summary = `${indexerList.length} indexers configured; ${disabled.length} currently have failure/disabled status.`;
   return toSummary({
-    summary: `${indexerList.length} indexers configured; ${disabled.length} currently have failure/disabled status.`,
+    summary,
+    view: componentView("Indexer Status", summary, [
+      {
+        id: "indexers",
+        title: "Prowlarr Indexers",
+        tone: disabled.length > 0 || warnings.length > 0 ? "warning" : "ok",
+        metrics: [
+          { label: "Configured", value: indexerList.length },
+          { label: "Disabled/Failed", value: disabled.length, tone: countTone(disabled.length) },
+        ],
+        items: indexerList.map((indexer) => ({
+          label: indexer.name,
+          value: indexer.enable ? "enabled" : "disabled",
+          detail: indexer.protocol,
+          tone: indexer.enable ? "ok" : "warning",
+        })),
+      },
+    ]),
     ok: health.ok && indexers.ok && indexerStatuses.ok,
     healthIssues: health.ok ? health.data : [{ message: health.error }],
     indexers: indexerList.map((indexer) => ({
@@ -422,7 +603,7 @@ export async function indexerStatus() {
       tags: indexer.tags,
     })),
     indexerStatuses: indexerStatuses.ok ? indexerStatuses.data : [],
-    warnings: [health, indexers, indexerStatuses].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`),
+    warnings,
   });
 }
 
@@ -439,8 +620,53 @@ export async function mediaStackOverview() {
   ]);
   const services = (status.services as AnyRecord[]) ?? [];
   const reachable = services.filter((service) => service.reachable).length;
+  const issueSummary = issues as AnyRecord;
+  const queueTotal = ((queues.services as AnyRecord[]) ?? []).reduce((sum, service) => sum + Number(service.total ?? 0), 0);
+  const healthServices = (health.services as AnyRecord[]) ?? [];
+  const healthIssueCount = healthServices.reduce((sum, service) => sum + Number(service.issues?.length ?? 0), 0);
+  const missingTotal = ((missing.services as AnyRecord[]) ?? []).reduce((sum, service) => sum + Number(service.total ?? 0), 0);
+  const diskWarnings = Array.isArray(disks.warnings) ? disks.warnings.length : 0;
+  const importIssueCount = Number(issueSummary.queueIssues?.length ?? 0) + Number(issueSummary.failedHistory?.length ?? 0);
+  const summary = `${reachable}/${services.length} services reachable. ${queues.summary} ${missing.summary}`;
   return toSummary({
-    summary: `${reachable}/${services.length} services reachable. ${queues.summary} ${missing.summary}`,
+    summary,
+    view: componentView("Media Stack", summary, [
+      {
+        id: "services",
+        title: "Services",
+        tone: reachable === services.length && healthIssueCount === 0 ? "ok" : "warning",
+        metrics: [
+          { label: "Reachable", value: `${reachable}/${services.length}`, tone: reachable === services.length ? "ok" : "warning" },
+          { label: "Health Issues", value: healthIssueCount, tone: countTone(healthIssueCount) },
+        ],
+        items: services.map((service) => ({
+          label: service.label,
+          value: service.version ?? (service.reachable ? "reachable" : "offline"),
+          detail: service.warnings?.[0],
+          tone: service.reachable && (service.warnings?.length ?? 0) === 0 ? "ok" : "warning",
+        })),
+      },
+      {
+        id: "activity",
+        title: "Activity",
+        tone: queueTotal + importIssueCount > 0 ? "warning" : "ok",
+        metrics: [
+          { label: "Queue", value: queueTotal, tone: countTone(queueTotal) },
+          { label: "Import Issues", value: importIssueCount, tone: countTone(importIssueCount) },
+          { label: "Missing", value: missingTotal, tone: missingTotal > 0 ? "info" : "ok" },
+        ],
+      },
+      {
+        id: "storage-indexers",
+        title: "Storage & Indexers",
+        tone: diskWarnings > 0 || !indexers.ok ? "warning" : "ok",
+        metrics: [
+          { label: "Disk Warnings", value: diskWarnings, tone: countTone(diskWarnings) },
+          { label: "Indexers", value: (indexers.indexers as AnyRecord[] | undefined)?.length ?? "unknown" },
+          { label: "Indexer Failures", value: (indexers.indexerStatuses as AnyRecord[] | undefined)?.length ?? "unknown" },
+        ],
+      },
+    ]),
     status,
     health,
     queues,

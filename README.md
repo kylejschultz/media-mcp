@@ -131,6 +131,21 @@ The HTTP smoke test performs a real MCP initialize and `tools/list` request over
 Streamable HTTP. It does not call the media APIs, so it is safe to run before the
 service API keys are fully wired.
 
+## Component Views
+
+The primary diagnostic tools include a `view` field alongside the existing raw
+JSON. `view` uses schema `media-mcp.view.v1` and is shaped for card/component
+renderers:
+
+- `title` and `summary` for the overall view.
+- `cards[]` for grouped status areas.
+- `metrics[]` for compact counts and ratios.
+- `items[]` for short rows with optional details.
+- `tone` values of `ok`, `info`, `warning`, or `error`.
+
+This field is additive. Clients can ignore it and keep reading the existing
+`summary`, `services`, and raw data fields.
+
 ## Tools
 
 - `media_stack_overview` - compact dashboard across status, health, queues, missing media, disk space, indexers, library counts, and import issues.
