@@ -16,7 +16,7 @@ type Session = {
 
 const maxBodyBytes = 1024 * 1024;
 const serverName = "media-mcp";
-const serverVersion = "0.1.3";
+const serverVersion = "0.1.4";
 
 class RequestBodyTooLargeError extends Error {}
 class InvalidJsonBodyError extends Error {}
@@ -206,6 +206,7 @@ export async function startHttpServer() {
         transport.onclose = async () => {
           const closedSessionId = transport.sessionId;
           if (closedSessionId) sessions.delete(closedSessionId);
+          transport.onclose = undefined;
           await server.close();
         };
 
@@ -252,7 +253,7 @@ export async function startHttpServer() {
 
   const shutdown = async () => {
     for (const session of sessions.values()) {
-      await session.transport.close();
+      session.transport.onclose = undefined;
       await session.server.close();
     }
     httpServer.close(() => process.exit(0));

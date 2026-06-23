@@ -28,7 +28,7 @@ const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.1.3",
+    version: "0.1.4",
   });
 
   server.registerTool(
