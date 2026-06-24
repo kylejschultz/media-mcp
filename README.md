@@ -218,3 +218,7 @@ browser-based clients.
 - Added ready-to-render Discord component specs to Radarr movie search and preview responses.
 - Movie search now includes a selectable dropdown for ambiguous results, with compact command callbacks for preview follow-up.
 - Movie preview now includes a poster-backed request component with the submit action disabled while `ALLOW_REQUESTS=false`.
+
+### 2026-06-24 - v0.2.4 Version Metadata Fix
+
+- Updated server version metadata for the Discord request component release.
