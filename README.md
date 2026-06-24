@@ -142,6 +142,8 @@ renderers:
 - `metrics[]` for compact counts and ratios.
 - `items[]` for short rows with optional details.
 - `tone` values of `ok`, `info`, `warning`, or `error`.
+- `checkedAt`, `warnings`, and `errors` are included on normalized summary
+  responses so clients can show freshness and callouts consistently.
 
 This field is additive. Clients can ignore it and keep reading the existing
 `summary`, `services`, and raw data fields.
@@ -151,7 +153,7 @@ This field is additive. Clients can ignore it and keep reading the existing
 - `media_stack_overview` - compact dashboard across status, health, queues, missing media, disk space, indexers, library counts, and import issues.
 - `service_status` - normalized reachability/auth/version checks.
 - `service_health` - health issues from configured services.
-- `disk_space` - service-visible disk space from Arr applications.
+- `disk_space` - service-visible disk space from media library Arr applications; Prowlarr is skipped because it does not own media storage.
 - `download_queue` - normalized queue items across Sonarr, Radarr, Lidarr, and SABnzbd.
 - `recent_activity` - normalized recent history/activity.
 - `get_missing_summary` - missing wanted counts and samples.
@@ -160,11 +162,11 @@ This field is additive. Clients can ignore it and keep reading the existing
 - `get_import_issues` - queue/import warnings and failed recent history.
 - `media_configured_apps` - list configured apps and missing env vars.
 - `media_system_status` - fetch app version/status.
-- `media_queue` - show download/processing queue for Sonarr, Radarr, Lidarr, or SABnzbd.
-- `media_history` - show recent history/events.
+- `media_queue` - show normalized download/processing queue for Sonarr, Radarr, Lidarr, or SABnzbd.
+- `media_history` - show normalized recent history/events.
 - `media_calendar` - show Sonarr/Radarr/Lidarr upcoming releases.
 - `media_search` - search indexers through Prowlarr.
-- `media_wanted_missing` - list missing wanted items for Sonarr/Radarr/Lidarr.
+- `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
 - `jellyfin_system_info` - show Jellyfin server version and basic system information.
 - `jellyfin_library_counts` - show Jellyfin media item counts.
 - `jellyfin_active_sessions` - show active Jellyfin sessions and playback summary.
@@ -175,3 +177,5 @@ This field is additive. Clients can ignore it and keep reading the existing
 
 SABnzbd has a different API shape from the Arr apps, so its queue/history tools normalize the output separately.
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
+Phase 1 is intentionally read-only. The overview payload includes a safety card
+showing that write/request/destructive tool tiers are disabled.

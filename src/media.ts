@@ -1,5 +1,6 @@
 import { apps, type AppConfig, type AppName, configuredApps, getApp } from "./config.js";
 import { arrGet, jellyfinGet, sabGet } from "./http.js";
+import { safetyStatus } from "./safety.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -10,6 +11,7 @@ export type JellyfinAppName = Extract<AppName, "jellyfin">;
 
 const libraryApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
 const queueApps: QueueAppName[] = ["sonarr", "radarr", "lidarr", "sabnzbd"];
+const diskApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
 
 function configuredTargets(appName?: AppName) {
   return appName ? [getApp(appName)] : apps.filter((app) => app.url && app.apiKey);
@@ -41,8 +43,13 @@ function itemTitle(record: AnyRecord) {
   ) ?? "unknown";
 }
 
-function toSummary<T extends { summary: string }>(result: T): T {
-  return result;
+function toSummary<T extends { summary: string; warnings?: unknown[]; errors?: unknown[] }>(result: T): T & { checkedAt: string; warnings: unknown[]; errors: unknown[] } {
+  return {
+    ...result,
+    checkedAt: new Date().toISOString(),
+    warnings: result.warnings ?? [],
+    errors: result.errors ?? [],
+  };
 }
 
 type ViewTone = "ok" | "info" | "warning" | "error";
@@ -297,36 +304,45 @@ export async function serviceHealth(appName?: AppName) {
 }
 
 export async function diskSpace() {
-  const services = await Promise.all(
-    apps
-      .filter((app) => app.kind === "arr" && app.url && app.apiKey)
-      .map(async (app) => {
-        const result = await withStatus(app, "diskspace", () => arrGet<AnyRecord[]>(app, "diskspace"));
-        return {
-          service: app.name,
-          ok: result.ok,
-          paths: result.ok
-            ? result.data.map((disk) => {
-                const free = bytes(disk.freeSpace);
-                const total = bytes(disk.totalSpace);
-                return {
-                  path: disk.path,
-                  label: disk.label,
-                  freeBytes: free,
-                  totalBytes: total,
-                  usedPercent: free !== undefined && total ? Math.round(((total - free) / total) * 1000) / 10 : undefined,
-                };
-              })
-            : [],
-          warnings: result.ok ? [] : [result.error],
-        };
-      }),
+  const targets = apps.filter(
+    (app): app is AppConfig & { name: LibraryAppName; url: string; apiKey: string } =>
+      diskApps.includes(app.name as LibraryAppName) && Boolean(app.url && app.apiKey),
   );
+  const services = await Promise.all(
+    targets.map(async (app) => {
+      const result = await withStatus(app, "diskspace", () => arrGet<AnyRecord[]>(app, "diskspace"));
+      return {
+        service: app.name,
+        ok: result.ok,
+        paths: result.ok
+          ? result.data.map((disk) => {
+              const free = bytes(disk.freeSpace);
+              const total = bytes(disk.totalSpace);
+              return {
+                path: disk.path,
+                label: disk.label,
+                freeBytes: free,
+                totalBytes: total,
+                usedPercent: free !== undefined && total ? Math.round(((total - free) / total) * 1000) / 10 : undefined,
+              };
+            })
+          : [],
+        warnings: result.ok ? [] : [result.error],
+      };
+    }),
+  );
+  const skipped = apps
+    .filter((app) => app.name === "prowlarr" && app.url && app.apiKey)
+    .map((app) => ({
+      service: app.name,
+      reason: "Prowlarr does not manage media library storage, so diskspace is skipped.",
+    }));
 
   const low = services.flatMap((service) =>
     service.paths.filter((path) => typeof path.usedPercent === "number" && path.usedPercent >= 90).map((path) => `${service.service}:${path.path}`),
   );
-  const summary = low.length === 0 ? "No service-visible disks are above 90% used." : `${low.length} service-visible paths are above 90% used.`;
+  const endpointWarnings = services.flatMap((service) => service.warnings.map((warning) => `${service.service}: ${warning}`));
+  const summary = low.length === 0 ? "No media service-visible disks are above 90% used." : `${low.length} media service-visible paths are above 90% used.`;
   return toSummary({
     summary,
     view: componentView("Disk Space", summary, [
@@ -346,7 +362,8 @@ export async function diskSpace() {
       },
     ]),
     services,
-    warnings: low,
+    skipped,
+    warnings: [...low, ...endpointWarnings],
   });
 }
 
@@ -483,9 +500,29 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
     }),
   );
   const total = services.reduce((sum, service) => sum + service.items.length, 0);
+  const warnings = services.flatMap((service) => service.warnings?.map((warning: string) => `${service.service}: ${warning}`) ?? []);
+  const summary = `${total} recent activity items returned across ${services.length} services.`;
   return toSummary({
-    summary: `${total} recent activity items returned across ${services.length} services.`,
+    summary,
+    view: componentView("Recent Activity", summary, [
+      {
+        id: "activity",
+        title: "Recent Activity",
+        tone: warnings.length > 0 ? "warning" : "ok",
+        metrics: [
+          { label: "Items", value: total },
+          { label: "Warnings", value: warnings.length, tone: countTone(warnings.length) },
+        ],
+        items: services.map((service) => ({
+          label: serviceLabel(service.service),
+          value: service.items.length,
+          detail: service.items[0]?.title ?? service.warnings?.[0],
+          tone: service.warnings?.length ? "warning" : service.items.length > 0 ? "info" : "ok",
+        })),
+      },
+    ]),
     services,
+    warnings,
   });
 }
 
@@ -495,6 +532,40 @@ export async function calendar(appName: LibraryAppName, start: string, end: stri
 
 export async function wantedMissing(appName: LibraryAppName, pageSize = 20) {
   return arrGet<AnyRecord>(getApp(appName), "wanted/missing", { page: 1, pageSize, sortKey: "airDateUtc", sortDirection: "ascending" });
+}
+
+export async function wantedMissingNormalized(appName: LibraryAppName, pageSize = 20) {
+  const app = getApp(appName);
+  const result = await withStatus(app, "wanted/missing", () => wantedMissing(appName, pageSize));
+  const records: AnyRecord[] = result.ok && Array.isArray(result.data.records) ? result.data.records : [];
+  const total = result.ok ? result.data.totalRecords ?? records.length : 0;
+  const items = records.map((record) => ({
+    title: itemTitle(record),
+    airDateUtc: record.airDateUtc,
+    releaseDate: record.releaseDate,
+    monitored: record.monitored,
+  }));
+  const summary = result.ok ? `${total} missing wanted items reported for ${app.label}.` : `${app.label} missing wanted lookup failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: componentView("Wanted Missing", summary, [
+      {
+        id: "missing",
+        title: app.label,
+        tone: result.ok ? (total > 0 ? "info" : "ok") : "warning",
+        metrics: [{ label: "Missing", value: total, tone: total > 0 ? "info" : "ok" }],
+        items: items.slice(0, 10).map((item) => ({
+          label: item.title,
+          value: item.releaseDate ?? item.airDateUtc ?? "unknown date",
+          tone: "info",
+        })),
+      },
+    ]),
+    service: app.name,
+    total,
+    items,
+    warnings: result.ok ? [] : [result.error],
+  });
 }
 
 export async function missingSummary(pageSize = 10) {
@@ -907,6 +978,15 @@ export async function mediaStackOverview() {
           { label: "Indexer Failures", value: (indexers.indexerStatuses as AnyRecord[] | undefined)?.length ?? "unknown" },
         ],
       },
+      {
+        id: "safety",
+        title: "Safety",
+        tone: safetyStatus.writeToolsEnabled ? "warning" : "ok",
+        metrics: [
+          { label: "Mode", value: safetyStatus.mode },
+          { label: "Write Tools", value: safetyStatus.writeToolsEnabled ? "enabled" : "disabled", tone: safetyStatus.writeToolsEnabled ? "warning" : "ok" },
+        ],
+      },
     ]),
     status,
     health,
@@ -916,6 +996,7 @@ export async function mediaStackOverview() {
     indexers,
     libraries,
     issues,
+    safety: safetyStatus,
   });
 }
 

@@ -5,7 +5,6 @@ import {
   calendar,
   diskSpace,
   downloadQueue,
-  history,
   importIssues,
   indexerStatus,
   jellyfinActiveSessions,
@@ -17,12 +16,11 @@ import {
   mediaStackOverview,
   missingSummary,
   prowlarrSearch,
-  queue,
   recentActivity,
   serviceHealth,
   serviceStatus,
   systemStatus,
-  wantedMissing,
+  wantedMissingNormalized,
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
 
@@ -31,10 +29,22 @@ const statusApp = appName;
 const libraryApp = z.enum(["sonarr", "radarr", "lidarr"]);
 const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
 
+type ToolHandler = (args: any) => Promise<unknown> | unknown;
+
+function tool(handler: ToolHandler) {
+  return async (args: any) => {
+    try {
+      return jsonText(await handler(args ?? {}));
+    } catch (error) {
+      return errorText(error);
+    }
+  };
+}
+
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.1.6",
+    version: "0.1.7",
   });
 
   server.registerTool(
@@ -44,13 +54,7 @@ export function createMediaMcpServer() {
       description:
         "Return a compact dashboard of service status, health, queues, missing media, disk space, indexers, library counts, and import issues.",
     },
-    async () => {
-      try {
-        return jsonText(await mediaStackOverview());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => mediaStackOverview()),
   );
 
   server.registerTool(
@@ -63,13 +67,7 @@ export function createMediaMcpServer() {
         service: statusApp.optional(),
       },
     },
-    async ({ service }) => {
-      try {
-        return jsonText(await serviceStatus(service));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ service }) => serviceStatus(service)),
   );
 
   server.registerTool(
@@ -81,28 +79,16 @@ export function createMediaMcpServer() {
         service: statusApp.optional(),
       },
     },
-    async ({ service }) => {
-      try {
-        return jsonText(await serviceHealth(service));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ service }) => serviceHealth(service)),
   );
 
   server.registerTool(
     "disk_space",
     {
       title: "Disk Space",
-      description: "Return service-visible disk space from Arr applications.",
+      description: "Return service-visible disk space from media library Arr applications; Prowlarr is skipped.",
     },
-    async () => {
-      try {
-        return jsonText(await diskSpace());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => diskSpace()),
   );
 
   server.registerTool(
@@ -116,13 +102,7 @@ export function createMediaMcpServer() {
         pageSize: z.number().int().min(1).max(100).default(50),
       },
     },
-    async ({ service, pageSize }) => {
-      try {
-        return jsonText(await downloadQueue(service, pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ service, pageSize }) => downloadQueue(service, pageSize)),
   );
 
   server.registerTool(
@@ -136,13 +116,7 @@ export function createMediaMcpServer() {
         pageSize: z.number().int().min(1).max(100).default(20),
       },
     },
-    async ({ service, pageSize }) => {
-      try {
-        return jsonText(await recentActivity(service, pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ service, pageSize }) => recentActivity(service, pageSize)),
   );
 
   server.registerTool(
@@ -155,13 +129,7 @@ export function createMediaMcpServer() {
         pageSize: z.number().int().min(1).max(50).default(10),
       },
     },
-    async ({ pageSize }) => {
-      try {
-        return jsonText(await missingSummary(pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ pageSize }) => missingSummary(pageSize)),
   );
 
   server.registerTool(
@@ -171,13 +139,7 @@ export function createMediaMcpServer() {
       description:
         "Return Prowlarr indexer configuration, failure status, and health issues without credentials.",
     },
-    async () => {
-      try {
-        return jsonText(await indexerStatus());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => indexerStatus()),
   );
 
   server.registerTool(
@@ -187,13 +149,7 @@ export function createMediaMcpServer() {
       description:
         "Return Sonarr series, Radarr movie, Lidarr artist, and Lidarr album counts.",
     },
-    async () => {
-      try {
-        return jsonText(await libraryCounts());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => libraryCounts()),
   );
 
   server.registerTool(
@@ -206,13 +162,7 @@ export function createMediaMcpServer() {
         pageSize: z.number().int().min(1).max(100).default(50),
       },
     },
-    async ({ pageSize }) => {
-      try {
-        return jsonText(await importIssues(pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ pageSize }) => importIssues(pageSize)),
   );
 
   server.registerTool(
@@ -222,7 +172,7 @@ export function createMediaMcpServer() {
       description:
         "List media apps and whether their URL/API key env vars are present.",
     },
-    async () => jsonText(configuredApps()),
+    tool(() => configuredApps()),
   );
 
   server.registerTool(
@@ -235,51 +185,33 @@ export function createMediaMcpServer() {
         app: statusApp.optional(),
       },
     },
-    async ({ app }) => {
-      try {
-        return jsonText(await systemStatus(app));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ app }) => systemStatus(app)),
   );
 
   server.registerTool(
     "media_queue",
     {
       title: "Media Queue",
-      description: "Show current queue for Sonarr, Radarr, Lidarr, or SABnzbd.",
+      description: "Show normalized queue for Sonarr, Radarr, Lidarr, or SABnzbd.",
       inputSchema: {
         app: queueApp,
         pageSize: z.number().int().min(1).max(100).default(20),
       },
     },
-    async ({ app, pageSize }) => {
-      try {
-        return jsonText(await queue(app, pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ app, pageSize }) => downloadQueue(app, pageSize)),
   );
 
   server.registerTool(
     "media_history",
     {
       title: "Media History",
-      description: "Show recent history for an Arr app or SABnzbd.",
+      description: "Show normalized recent history/activity for one configured app.",
       inputSchema: {
         app: appName,
         pageSize: z.number().int().min(1).max(100).default(20),
       },
     },
-    async ({ app, pageSize }) => {
-      try {
-        return jsonText(await history(app, pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ app, pageSize }) => recentActivity(app, pageSize)),
   );
 
   server.registerTool(
@@ -295,32 +227,20 @@ export function createMediaMcpServer() {
         end: z.string().describe("Exclusive ISO date, for example 2026-06-28"),
       },
     },
-    async ({ app, start, end }) => {
-      try {
-        return jsonText(await calendar(app, start, end));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ app, start, end }) => calendar(app, start, end)),
   );
 
   server.registerTool(
     "media_wanted_missing",
     {
       title: "Wanted Missing Media",
-      description: "List missing wanted media from Sonarr, Radarr, or Lidarr.",
+      description: "List normalized missing wanted media from Sonarr, Radarr, or Lidarr.",
       inputSchema: {
         app: libraryApp,
         pageSize: z.number().int().min(1).max(100).default(20),
       },
     },
-    async ({ app, pageSize }) => {
-      try {
-        return jsonText(await wantedMissing(app, pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ app, pageSize }) => wantedMissingNormalized(app, pageSize)),
   );
 
   server.registerTool(
@@ -334,13 +254,7 @@ export function createMediaMcpServer() {
         limit: z.number().int().min(1).max(100).default(25),
       },
     },
-    async ({ query, type, limit }) => {
-      try {
-        return jsonText(await prowlarrSearch(query, type, limit));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ query, type, limit }) => prowlarrSearch(query, type, limit)),
   );
 
   server.registerTool(
@@ -349,13 +263,7 @@ export function createMediaMcpServer() {
       title: "Jellyfin System Info",
       description: "Return Jellyfin server version and basic system information.",
     },
-    async () => {
-      try {
-        return jsonText(await jellyfinInfo());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => jellyfinInfo()),
   );
 
   server.registerTool(
@@ -364,13 +272,7 @@ export function createMediaMcpServer() {
       title: "Jellyfin Library Counts",
       description: "Return read-only Jellyfin item counts for major library types.",
     },
-    async () => {
-      try {
-        return jsonText(await jellyfinLibraryCounts());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => jellyfinLibraryCounts()),
   );
 
   server.registerTool(
@@ -379,13 +281,7 @@ export function createMediaMcpServer() {
       title: "Jellyfin Active Sessions",
       description: "Return active Jellyfin sessions with user/client/playback summary.",
     },
-    async () => {
-      try {
-        return jsonText(await jellyfinActiveSessions());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => jellyfinActiveSessions()),
   );
 
   server.registerTool(
@@ -397,13 +293,7 @@ export function createMediaMcpServer() {
         pageSize: z.number().int().min(1).max(100).default(20),
       },
     },
-    async ({ pageSize }) => {
-      try {
-        return jsonText(await jellyfinRecentActivity(pageSize));
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(({ pageSize }) => jellyfinRecentActivity(pageSize)),
   );
 
   server.registerTool(
@@ -412,13 +302,7 @@ export function createMediaMcpServer() {
       title: "Jellyfin Scheduled Tasks",
       description: "Return Jellyfin scheduled task state and last execution summaries.",
     },
-    async () => {
-      try {
-        return jsonText(await jellyfinScheduledTasks());
-      } catch (error) {
-        return errorText(error);
-      }
-    },
+    tool(() => jellyfinScheduledTasks()),
   );
 
   return server;

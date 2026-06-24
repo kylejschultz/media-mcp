@@ -1,6 +1,6 @@
 {
   "name": "media-mcp",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "description": "MCP server for Kyle's media stack.",
   "type": "module",
   "bin": {
