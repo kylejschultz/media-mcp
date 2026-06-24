@@ -16,7 +16,7 @@ type Session = {
 
 const maxBodyBytes = 1024 * 1024;
 const serverName = "media-mcp";
-const serverVersion = "0.1.8";
+const serverVersion = "0.1.9";
 
 class RequestBodyTooLargeError extends Error {}
 class InvalidJsonBodyError extends Error {}

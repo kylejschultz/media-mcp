@@ -169,6 +169,8 @@ This field is additive. Clients can ignore it and keep reading the existing
 - `media_calendar` - show Sonarr/Radarr/Lidarr upcoming releases.
 - `media_search` - search indexers through Prowlarr.
 - `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
+- `beets_flask_status` - show read-only beets-flask queue, worker, inbox, and library status.
+- `slskd_status` - show read-only slskd Soulseek connection, transfer, and share status.
 - `jellyfin_system_info` - show Jellyfin server version and basic system information.
 - `jellyfin_library_counts` - show Jellyfin media item counts.
 - `jellyfin_active_sessions` - show active Jellyfin sessions and playback summary.
@@ -179,6 +181,7 @@ This field is additive. Clients can ignore it and keep reading the existing
 
 SABnzbd has a different API shape from the Arr apps, so its queue/history tools normalize the output separately.
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
+beets-flask support is read-only and uses `BEETS_FLASK_URL`. slskd support is read-only and uses `SLSKD_URL` plus `SLSKD_API_KEY`.
 Phase 1 is intentionally read-only. The overview payload includes a safety card
 showing that write/request/destructive tool tiers are disabled.
 The generated stack model is used to interpret expected stack-specific warnings,

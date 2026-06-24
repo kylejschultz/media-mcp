@@ -1,5 +1,5 @@
 import { apps, type AppConfig, type AppName, configuredApps, getApp } from "./config.js";
-import { arrGet, jellyfinGet, sabGet } from "./http.js";
+import { arrGet, beetsGet, jellyfinGet, sabGet, slskdGet } from "./http.js";
 import { safetyStatus } from "./safety.js";
 import { expectedServiceIssue, getStackFlow, getStackModel, type StackFlowName } from "./stack-model.js";
 
@@ -15,7 +15,7 @@ const queueApps: QueueAppName[] = ["sonarr", "radarr", "lidarr", "sabnzbd"];
 const diskApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
 
 function configuredTargets(appName?: AppName) {
-  return appName ? [getApp(appName)] : apps.filter((app) => app.url && app.apiKey);
+  return appName ? [getApp(appName)] : apps.filter((app) => app.url && (!app.keyEnv || app.apiKey));
 }
 
 function errorMessage(error: unknown) {
@@ -145,6 +145,42 @@ async function jellyfinSystemInfo(app: AppConfig) {
   return jellyfinGet<AnyRecord>(app, "System/Info");
 }
 
+async function beetsQueues(app: AppConfig) {
+  return beetsGet<AnyRecord>(app, "api_v1/monitor/queues");
+}
+
+async function beetsWorkers(app: AppConfig) {
+  return beetsGet<AnyRecord>(app, "api_v1/monitor/workers");
+}
+
+async function beetsJobs(app: AppConfig) {
+  return beetsGet<AnyRecord[]>(app, "api_v1/monitor/jobs");
+}
+
+async function beetsInboxTree(app: AppConfig) {
+  return beetsGet<AnyRecord[]>(app, "api_v1/inbox/tree");
+}
+
+async function beetsLibraryStats(app: AppConfig) {
+  return beetsGet<AnyRecord>(app, "api_v1/library/stats");
+}
+
+async function slskdServer(app: AppConfig) {
+  return slskdGet<AnyRecord>(app, "api/v0/server");
+}
+
+async function slskdDownloads(app: AppConfig) {
+  return slskdGet<AnyRecord[]>(app, "api/v0/transfers/downloads");
+}
+
+async function slskdUploads(app: AppConfig) {
+  return slskdGet<AnyRecord[]>(app, "api/v0/transfers/uploads");
+}
+
+async function slskdShares(app: AppConfig) {
+  return slskdGet<AnyRecord>(app, "api/v0/shares");
+}
+
 function configuredJellyfin() {
   return getApp("jellyfin");
 }
@@ -169,6 +205,18 @@ export async function systemStatus(appName?: AppName) {
               operatingSystem: result.data.OperatingSystem,
               startupWizardCompleted: result.data.StartupWizardCompleted,
             }
+          : result;
+      }
+      if (app.kind === "beets-flask") {
+        const result = await withStatus(app, "api_v1/library/stats", () => beetsLibraryStats(app));
+        return result.ok
+          ? { app: app.name, label: app.label, ok: true, libraryPath: result.data.libraryPath, items: result.data.items, albums: result.data.albums }
+          : result;
+      }
+      if (app.kind === "slskd") {
+        const result = await withStatus(app, "api/v0/server", () => slskdServer(app));
+        return result.ok
+          ? { app: app.name, label: app.label, ok: true, state: result.data.state, connected: result.data.isConnected, loggedIn: result.data.isLoggedIn }
           : result;
       }
       const result = await withStatus(app, "system/status", () => arrStatus(app));
@@ -206,6 +254,41 @@ export async function serviceStatus(appName?: AppName) {
           health: result.ok ? "ok" : "error",
           latencyMs: result.latencyMs,
           warnings: result.ok ? [] : [result.error],
+        };
+      }
+      if (app.kind === "beets-flask") {
+        const result = await withStatus(app, "api_v1/library/stats", () => beetsLibraryStats(app));
+        return {
+          service: app.name,
+          label: app.label,
+          configured: true,
+          reachable: result.ok,
+          authenticated: result.ok,
+          version: undefined,
+          health: result.ok ? "ok" : "error",
+          latencyMs: result.latencyMs,
+          warnings: result.ok ? [] : [result.error],
+          details: result.ok ? { albums: result.data.albums, items: result.data.items, libraryPath: result.data.libraryPath } : undefined,
+        };
+      }
+      if (app.kind === "slskd") {
+        const result = await withStatus(app, "api/v0/server", () => slskdServer(app));
+        return {
+          service: app.name,
+          label: app.label,
+          configured: true,
+          reachable: result.ok,
+          authenticated: result.ok,
+          version: undefined,
+          health: result.ok && result.data.isConnected && result.data.isLoggedIn ? "ok" : "warning",
+          latencyMs: result.latencyMs,
+          warnings: result.ok
+            ? [
+                ...(!result.data.isConnected ? ["Soulseek server is not connected"] : []),
+                ...(!result.data.isLoggedIn ? ["Soulseek user is not logged in"] : []),
+              ]
+            : [result.error],
+          details: result.ok ? { state: result.data.state } : undefined,
         };
       }
 
@@ -278,6 +361,48 @@ export async function serviceHealth(appName?: AppName) {
           ok: result.ok,
           health: result.ok ? "ok" : "error",
           issues: result.ok ? [] : [{ severity: "error", message: result.error }],
+        };
+      }
+      if (app.kind === "beets-flask") {
+        const [queues, workers, jobs] = await Promise.all([
+          withStatus(app, "api_v1/monitor/queues", () => beetsQueues(app)),
+          withStatus(app, "api_v1/monitor/workers", () => beetsWorkers(app)),
+          withStatus(app, "api_v1/monitor/jobs", () => beetsJobs(app)),
+        ]);
+        const queueRecords = queues.ok ? Object.values((queues.data.queues as AnyRecord | undefined) ?? {}) as AnyRecord[] : [];
+        const workerRecords = workers.ok ? Object.values((workers.data.workers as AnyRecord | undefined) ?? {}) as AnyRecord[] : [];
+        const failedJobs = queueRecords.reduce((sum, queue) => sum + Number(queue.failed ?? 0), 0);
+        const issues = [
+          ...(queues.ok ? [] : [{ severity: "error", message: queues.error }]),
+          ...(workers.ok ? [] : [{ severity: "error", message: workers.error }]),
+          ...(jobs.ok ? [] : [{ severity: "error", message: jobs.error }]),
+          ...(failedJobs > 0 ? [{ severity: "warning", message: `${failedJobs} failed beets-flask queue jobs reported` }] : []),
+          ...(workerRecords.length === 0 ? [{ severity: "warning", message: "No beets-flask workers reported" }] : []),
+        ];
+        return {
+          service: app.name,
+          ok: issues.length === 0,
+          health: issues.length === 0 ? "ok" : "warning",
+          issues,
+          queues: queueRecords,
+          workers: workerRecords.length,
+          activeJobs: jobs.ok ? jobs.data.length : undefined,
+        };
+      }
+      if (app.kind === "slskd") {
+        const result = await withStatus(app, "api/v0/server", () => slskdServer(app));
+        const issues = result.ok
+          ? [
+              ...(!result.data.isConnected ? [{ severity: "warning", message: "Soulseek server is not connected" }] : []),
+              ...(!result.data.isLoggedIn ? [{ severity: "warning", message: "Soulseek user is not logged in" }] : []),
+            ]
+          : [{ severity: "error", message: result.error }];
+        return {
+          service: app.name,
+          ok: result.ok && issues.length === 0,
+          health: issues.length === 0 ? "ok" : "warning",
+          issues,
+          state: result.ok ? result.data.state : undefined,
         };
       }
 
@@ -505,6 +630,23 @@ function normalizeJellyfinActivity(app: AppConfig, response: AnyRecord) {
   }));
 }
 
+function flattenTransfers(groups: AnyRecord[] = []) {
+  return groups.flatMap((group) =>
+    (Array.isArray(group.directories) ? group.directories : []).flatMap((directory: AnyRecord) =>
+      (Array.isArray(directory.files) ? directory.files : []).map((file: AnyRecord) => ({
+        username: group.username,
+        directory: directory.directory,
+        filename: file.filename,
+        state: file.stateDescription ?? file.state,
+        percentComplete: file.percentComplete,
+        bytesRemaining: file.bytesRemaining,
+        requestedAt: file.requestedAt,
+        endedAt: file.endedAt,
+      })),
+    ),
+  );
+}
+
 export async function recentActivity(appName?: AppName, pageSize = 20) {
   const targets = configuredTargets(appName);
   const services = await Promise.all(
@@ -552,7 +694,8 @@ export async function calendar(appName: LibraryAppName, start: string, end: stri
 }
 
 export async function wantedMissing(appName: LibraryAppName, pageSize = 20) {
-  return arrGet<AnyRecord>(getApp(appName), "wanted/missing", { page: 1, pageSize, sortKey: "airDateUtc", sortDirection: "ascending" });
+  const sortKey = appName === "lidarr" ? "releaseDate" : "airDateUtc";
+  return arrGet<AnyRecord>(getApp(appName), "wanted/missing", { page: 1, pageSize, sortKey, sortDirection: "ascending" });
 }
 
 export async function wantedMissingNormalized(appName: LibraryAppName, pageSize = 20) {
@@ -789,6 +932,118 @@ export async function jellyfinScheduledTasks() {
       lastExecutionResult: task.LastExecutionResult,
     })),
     warnings: result.ok ? [] : [result.error],
+  });
+}
+
+export async function beetsFlaskStatus() {
+  const app = getApp("beets-flask");
+  const [queues, workers, jobs, inbox, library] = await Promise.all([
+    withStatus(app, "api_v1/monitor/queues", () => beetsQueues(app)),
+    withStatus(app, "api_v1/monitor/workers", () => beetsWorkers(app)),
+    withStatus(app, "api_v1/monitor/jobs", () => beetsJobs(app)),
+    withStatus(app, "api_v1/inbox/tree", () => beetsInboxTree(app)),
+    withStatus(app, "api_v1/library/stats", () => beetsLibraryStats(app)),
+  ]);
+  const queueRecords = queues.ok ? Object.values((queues.data.queues as AnyRecord | undefined) ?? {}) as AnyRecord[] : [];
+  const workerRecords = workers.ok ? Object.values((workers.data.workers as AnyRecord | undefined) ?? {}) as AnyRecord[] : [];
+  const inboxRoots = inbox.ok ? inbox.data : [];
+  const inboxAlbums = inboxRoots.flatMap((root) => (Array.isArray(root.children) ? root.children : []).filter((child: AnyRecord) => child.is_album));
+  const failedJobs = queueRecords.reduce((sum, queue) => sum + Number(queue.failed ?? 0), 0);
+  const warnings = [
+    ...[queues, workers, jobs, inbox, library].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`),
+    ...(failedJobs > 0 ? [`${failedJobs} failed queue jobs reported`] : []),
+  ];
+  const summary = warnings.length === 0
+    ? `beets-flask is reachable; ${inboxAlbums.length} inbox albums pending preview/import.`
+    : `beets-flask reported ${warnings.length} warnings; ${inboxAlbums.length} inbox albums pending preview/import.`;
+  return toSummary({
+    summary,
+    view: componentView("beets-flask", summary, [
+      {
+        id: "pipeline",
+        title: "Music Import Pipeline",
+        tone: warnings.length > 0 ? "warning" : inboxAlbums.length > 0 ? "info" : "ok",
+        metrics: [
+          { label: "Inbox Albums", value: inboxAlbums.length, tone: inboxAlbums.length > 0 ? "info" : "ok" },
+          { label: "Workers", value: workerRecords.length, tone: workerRecords.length > 0 ? "ok" : "warning" },
+          { label: "Active Jobs", value: jobs.ok ? jobs.data.length : "unknown" },
+          { label: "Failed Jobs", value: failedJobs, tone: countTone(failedJobs) },
+        ],
+        items: inboxAlbums.slice(0, 8).map((album) => ({
+          label: String(album.full_path ?? "").split("/").pop() ?? "album",
+          detail: album.full_path,
+          tone: "info",
+        })),
+      },
+    ]),
+    ok: warnings.length === 0,
+    queues: queueRecords,
+    workers: workerRecords,
+    activeJobs: jobs.ok ? jobs.data : [],
+    inbox: {
+      roots: inboxRoots.map((root) => ({ path: root.full_path, children: Array.isArray(root.children) ? root.children.length : 0 })),
+      albums: inboxAlbums.map((album) => ({ path: album.full_path, hash: album.hash })),
+    },
+    library: library.ok ? library.data : undefined,
+    warnings,
+  });
+}
+
+export async function slskdStatus() {
+  const app = getApp("slskd");
+  const [server, downloads, uploads, shares] = await Promise.all([
+    withStatus(app, "api/v0/server", () => slskdServer(app)),
+    withStatus(app, "api/v0/transfers/downloads", () => slskdDownloads(app)),
+    withStatus(app, "api/v0/transfers/uploads", () => slskdUploads(app)),
+    withStatus(app, "api/v0/shares", () => slskdShares(app)),
+  ]);
+  const downloadFiles = downloads.ok ? flattenTransfers(downloads.data) : [];
+  const uploadFiles = uploads.ok ? flattenTransfers(uploads.data) : [];
+  const activeDownloads = downloadFiles.filter((file) => !String(file.state ?? "").toLowerCase().includes("completed"));
+  const failedDownloads = downloadFiles.filter((file) => /failed|errored|cancelled/i.test(String(file.state ?? "")));
+  const localShares = shares.ok && Array.isArray(shares.data.local) ? shares.data.local : [];
+  const warnings = [
+    ...[server, downloads, uploads, shares].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`),
+    ...(server.ok && !server.data.isConnected ? ["Soulseek server is not connected"] : []),
+    ...(server.ok && !server.data.isLoggedIn ? ["Soulseek user is not logged in"] : []),
+    ...(failedDownloads.length > 0 ? [`${failedDownloads.length} failed slskd downloads retained in history`] : []),
+  ];
+  const summary = warnings.length === 0
+    ? `slskd is ${server.ok ? server.data.state : "reachable"}; ${activeDownloads.length} active downloads.`
+    : `slskd reported ${warnings.length} warnings; ${activeDownloads.length} active downloads.`;
+  return toSummary({
+    summary,
+    view: componentView("slskd", summary, [
+      {
+        id: "transfers",
+        title: "Soulseek Transfers",
+        tone: warnings.length > 0 ? "warning" : activeDownloads.length > 0 ? "info" : "ok",
+        metrics: [
+          { label: "Active Downloads", value: activeDownloads.length, tone: activeDownloads.length > 0 ? "info" : "ok" },
+          { label: "Failed Downloads", value: failedDownloads.length, tone: countTone(failedDownloads.length) },
+          { label: "Recent Uploads", value: uploadFiles.length },
+          { label: "Shared Files", value: localShares[0]?.files ?? "unknown" },
+        ],
+        items: activeDownloads.slice(0, 8).map((file) => ({
+          label: String(file.filename ?? "").split("\\").pop() ?? "download",
+          value: file.percentComplete === undefined ? file.state : `${file.percentComplete}%`,
+          detail: file.username,
+          tone: "info",
+        })),
+      },
+    ]),
+    ok: warnings.length === 0,
+    server: server.ok ? server.data : undefined,
+    downloads: {
+      totalFiles: downloadFiles.length,
+      active: activeDownloads,
+      failed: failedDownloads.slice(0, 20),
+    },
+    uploads: {
+      totalFiles: uploadFiles.length,
+    },
+    shares: localShares,
+    warnings,
   });
 }
 

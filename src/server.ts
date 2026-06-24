@@ -2,6 +2,7 @@ import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { configuredApps } from "./config.js";
 import {
+  beetsFlaskStatus,
   calendar,
   diskSpace,
   downloadQueue,
@@ -21,12 +22,13 @@ import {
   recentActivity,
   serviceHealth,
   serviceStatus,
+  slskdStatus,
   systemStatus,
   wantedMissingNormalized,
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
 
-const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin"]);
+const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin", "beets-flask", "slskd"]);
 const statusApp = appName;
 const libraryApp = z.enum(["sonarr", "radarr", "lidarr"]);
 const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
@@ -47,7 +49,7 @@ function tool(handler: ToolHandler) {
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.1.8",
+    version: "0.1.9",
   });
 
   server.registerTool(
@@ -279,6 +281,24 @@ export function createMediaMcpServer() {
       },
     },
     tool(({ query, type, limit }) => prowlarrSearch(query, type, limit)),
+  );
+
+  server.registerTool(
+    "beets_flask_status",
+    {
+      title: "beets-flask Status",
+      description: "Return read-only beets-flask music import pipeline status, queue/workers, inbox, and library stats.",
+    },
+    tool(() => beetsFlaskStatus()),
+  );
+
+  server.registerTool(
+    "slskd_status",
+    {
+      title: "slskd Status",
+      description: "Return read-only slskd Soulseek connection, transfer, and share status.",
+    },
+    tool(() => slskdStatus()),
   );
 
   server.registerTool(
