@@ -1,102 +1,35 @@
 import { apps, type AppConfig, type AppName, configuredApps, getApp } from "./config.js";
-import { arrGet, beetsGet, jellyfinGet, sabGet, slskdGet } from "./http.js";
-import { safetyStatus } from "./safety.js";
+import {
+  arrHealth,
+  arrQualityProfiles,
+  arrRootFolders,
+  arrStatus,
+  arrTags,
+  beetsInboxTree,
+  beetsJobs,
+  beetsLibraryStats,
+  beetsQueues,
+  beetsWorkers,
+  jellyfinSystemInfo,
+  radarrAddMovie,
+  radarrMovieLookup,
+  radarrMovies,
+  sabVersion,
+  slskdDownloads,
+  slskdServer,
+  slskdShares,
+  slskdUploads,
+} from "./adapters.js";
+import { arrGet, jellyfinGet, sabGet } from "./http.js";
+import { bytes, completedAfterFailure, firstString, itemTitle } from "./format.js";
+import { toSummary, withStatus } from "./results.js";
+import { requireRequestToolsEnabled, safetyStatus } from "./safety.js";
 import { expectedServiceIssue, getStackFlow, getStackModel, type StackFlowName } from "./stack-model.js";
-
-type AnyRecord = Record<string, any>;
-
-export type ArrAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr" | "prowlarr">;
-export type LibraryAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr">;
-export type QueueAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr" | "sabnzbd">;
-export type JellyfinAppName = Extract<AppName, "jellyfin">;
-
-const libraryApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
-const queueApps: QueueAppName[] = ["sonarr", "radarr", "lidarr", "sabnzbd"];
-const diskApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
+import { diskApps, libraryApps, queueApps, type AnyRecord, type LibraryAppName, type QueueAppName } from "./types.js";
+import { componentView, countTone, healthTone, serviceLabel } from "./views.js";
 
 function configuredTargets(appName?: AppName) {
   return appName ? [getApp(appName)] : apps.filter((app) => app.url && (!app.keyEnv || app.apiKey));
-}
-
-function errorMessage(error: unknown) {
-  return error instanceof Error ? error.message : String(error);
-}
-
-function bytes(value: unknown) {
-  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
-}
-
-function firstString(...values: unknown[]) {
-  return values.find((value): value is string => typeof value === "string" && value.length > 0);
-}
-
-function itemTitle(record: AnyRecord) {
-  return firstString(
-    record.title,
-    record.sourceTitle,
-    record.movie?.title,
-    record.series?.title,
-    record.artist?.artistName,
-    record.album?.title,
-    record.name,
-    record.filename,
-    record.nzb_name,
-  ) ?? "unknown";
-}
-
-function toSummary<T extends { summary: string; warnings?: unknown[]; errors?: unknown[] }>(result: T): T & { checkedAt: string; warnings: unknown[]; errors: unknown[] } {
-  return {
-    ...result,
-    checkedAt: new Date().toISOString(),
-    warnings: result.warnings ?? [],
-    errors: result.errors ?? [],
-  };
-}
-
-type ViewTone = "ok" | "info" | "warning" | "error";
-
-type ViewMetric = {
-  label: string;
-  value: string | number;
-  tone?: ViewTone;
-};
-
-type ViewItem = {
-  label: string;
-  value?: string | number | boolean;
-  detail?: string;
-  tone?: ViewTone;
-};
-
-type ViewCard = {
-  id: string;
-  title: string;
-  tone?: ViewTone;
-  metrics?: ViewMetric[];
-  items?: ViewItem[];
-};
-
-type ComponentView = {
-  schema: "media-mcp.view.v1";
-  title: string;
-  summary: string;
-  cards: ViewCard[];
-};
-
-function componentView(title: string, summary: string, cards: ViewCard[]): ComponentView {
-  return { schema: "media-mcp.view.v1", title, summary, cards };
-}
-
-function countTone(count: number, warningAt = 1): ViewTone {
-  return count >= warningAt ? "warning" : "ok";
-}
-
-function healthTone(warnings: unknown[] = []): ViewTone {
-  return warnings.length > 0 ? "warning" : "ok";
-}
-
-function serviceLabel(service: string) {
-  return apps.find((app) => app.name === service)?.label ?? service;
 }
 
 function normalizeHealthIssues(app: AppConfig, issues: AnyRecord[]) {
@@ -113,72 +46,6 @@ function normalizeHealthIssues(app: AppConfig, issues: AnyRecord[]) {
       verifyWith: expected?.verifyWith,
     };
   });
-}
-
-type OperationResult<T> =
-  | { app: AppName; label: string; ok: true; latencyMs: number; data: T }
-  | { app: AppName; label: string; ok: false; latencyMs: number; error: string; operation: string };
-
-async function withStatus<T>(app: AppConfig, operation: string, fn: () => Promise<T>): Promise<OperationResult<T>> {
-  const started = Date.now();
-  try {
-    const data = await fn();
-    return { app: app.name, label: app.label, ok: true, latencyMs: Date.now() - started, data };
-  } catch (error) {
-    return { app: app.name, label: app.label, ok: false, latencyMs: Date.now() - started, error: errorMessage(error), operation };
-  }
-}
-
-async function arrHealth(app: AppConfig) {
-  return arrGet<AnyRecord[]>(app, "health");
-}
-
-async function arrStatus(app: AppConfig) {
-  return arrGet<AnyRecord>(app, "system/status");
-}
-
-async function sabVersion(app: AppConfig) {
-  return sabGet<{ version?: string }>(app, "version");
-}
-
-async function jellyfinSystemInfo(app: AppConfig) {
-  return jellyfinGet<AnyRecord>(app, "System/Info");
-}
-
-async function beetsQueues(app: AppConfig) {
-  return beetsGet<AnyRecord>(app, "api_v1/monitor/queues");
-}
-
-async function beetsWorkers(app: AppConfig) {
-  return beetsGet<AnyRecord>(app, "api_v1/monitor/workers");
-}
-
-async function beetsJobs(app: AppConfig) {
-  return beetsGet<AnyRecord[]>(app, "api_v1/monitor/jobs");
-}
-
-async function beetsInboxTree(app: AppConfig) {
-  return beetsGet<AnyRecord[]>(app, "api_v1/inbox/tree");
-}
-
-async function beetsLibraryStats(app: AppConfig) {
-  return beetsGet<AnyRecord>(app, "api_v1/library/stats");
-}
-
-async function slskdServer(app: AppConfig) {
-  return slskdGet<AnyRecord>(app, "api/v0/server");
-}
-
-async function slskdDownloads(app: AppConfig) {
-  return slskdGet<AnyRecord[]>(app, "api/v0/transfers/downloads");
-}
-
-async function slskdUploads(app: AppConfig) {
-  return slskdGet<AnyRecord[]>(app, "api/v0/transfers/uploads");
-}
-
-async function slskdShares(app: AppConfig) {
-  return slskdGet<AnyRecord>(app, "api/v0/shares");
 }
 
 function configuredJellyfin() {
@@ -1116,13 +983,32 @@ export async function importIssues(pageSize = 50) {
 
   const activity = await recentActivity(undefined, pageSize);
   const activityServices = (activity.services as Array<{ service: string; items: AnyRecord[] }>) ?? [];
-  const failedHistory = activityServices.flatMap((service) =>
-    service.items
-      .filter((item) => item.successful === false)
-      .map((item) => ({ service: service.service, title: item.title, eventType: item.eventType, date: item.date })),
+  const historyFailures = activityServices.flatMap((service) =>
+    service.items.filter((item) => item.successful === false).map((item) => ({ service: service.service, item, serviceItems: service.items })),
   );
+  const resolvedFailedHistory = historyFailures
+    .map(({ service, item, serviceItems }) => {
+      const resolvedBy = completedAfterFailure(item, serviceItems);
+      return resolvedBy
+        ? {
+            service,
+            title: item.title,
+            eventType: item.eventType,
+            date: item.date,
+            resolvedBy: {
+              eventType: resolvedBy.eventType,
+              date: resolvedBy.date,
+            },
+          }
+        : undefined;
+    })
+    .filter((item): item is NonNullable<typeof item> => Boolean(item));
+  const failedHistory = historyFailures
+    .filter(({ item, serviceItems }) => !completedAfterFailure(item, serviceItems))
+    .map(({ service, item }) => ({ service, title: item.title, eventType: item.eventType, date: item.date }));
 
-  const summary = `${queueIssues.length} queue/import warnings and ${failedHistory.length} failed recent history items found.`;
+  const resolvedCount = resolvedFailedHistory.length;
+  const summary = `${queueIssues.length} queue/import warnings and ${failedHistory.length} unresolved failed recent history items found; ${resolvedCount} later completed.`;
   return toSummary({
     summary,
     view: componentView("Import Issues", summary, [
@@ -1133,6 +1019,7 @@ export async function importIssues(pageSize = 50) {
         metrics: [
           { label: "Queue Warnings", value: queueIssues.length, tone: countTone(queueIssues.length) },
           { label: "Failed History", value: failedHistory.length, tone: countTone(failedHistory.length) },
+          { label: "Later Completed", value: resolvedCount, tone: "ok" },
         ],
         items: [...queueIssues, ...failedHistory].slice(0, 8).map((issue) => {
           const record = issue as AnyRecord;
@@ -1147,6 +1034,7 @@ export async function importIssues(pageSize = 50) {
     ]),
     queueIssues,
     failedHistory,
+    resolvedFailedHistory,
   });
 }
 
@@ -1196,6 +1084,7 @@ export async function indexerStatus() {
 }
 
 export async function mediaStackOverview() {
+  const safety = safetyStatus();
   const [status, health, queues, missing, disks, indexers, libraries, issues] = await Promise.all([
     serviceStatus(),
     serviceHealth(),
@@ -1265,10 +1154,10 @@ export async function mediaStackOverview() {
       {
         id: "safety",
         title: "Safety",
-        tone: safetyStatus.writeToolsEnabled ? "warning" : "ok",
+        tone: safety.writeToolsEnabled ? "warning" : "ok",
         metrics: [
-          { label: "Mode", value: safetyStatus.mode },
-          { label: "Write Tools", value: safetyStatus.writeToolsEnabled ? "enabled" : "disabled", tone: safetyStatus.writeToolsEnabled ? "warning" : "ok" },
+          { label: "Mode", value: safety.mode },
+          { label: "Write Tools", value: safety.writeToolsEnabled ? "enabled" : "disabled", tone: safety.writeToolsEnabled ? "warning" : "ok" },
         ],
       },
       {
@@ -1289,7 +1178,7 @@ export async function mediaStackOverview() {
     indexers,
     libraries,
     issues,
-    safety: safetyStatus,
+    safety,
   });
 }
 
@@ -1337,6 +1226,260 @@ export async function mediaStackFlow(mediaType?: StackFlowName) {
       },
     ]),
     flow,
+  });
+}
+
+type MovieRequestInput = {
+  tmdbId: number;
+  qualityProfileId: number;
+  rootFolderPath: string;
+  monitored?: boolean;
+  searchNow?: boolean;
+  tagIds?: number[];
+};
+
+function movieCandidate(record: AnyRecord) {
+  return {
+    tmdbId: record.tmdbId,
+    title: record.title,
+    year: record.year,
+    titleSlug: record.titleSlug,
+    overview: record.overview,
+    runtime: record.runtime,
+    certification: record.certification,
+    genres: record.genres,
+    images: record.images,
+    remotePoster: record.remotePoster,
+    alreadyExists: Boolean(record.isExisting),
+  };
+}
+
+function qualityProfileOptions(records: AnyRecord[]) {
+  return records.map((profile) => ({
+    id: profile.id,
+    label: profile.name,
+    name: profile.name,
+  }));
+}
+
+function rootFolderOptions(records: AnyRecord[]) {
+  return records.map((folder) => ({
+    path: folder.path,
+    label: folder.path,
+    freeSpace: folder.freeSpace,
+    unmappedFolders: folder.unmappedFolders,
+  }));
+}
+
+function tagOptions(records: AnyRecord[]) {
+  return records.map((tag) => ({
+    id: tag.id,
+    label: tag.label,
+  }));
+}
+
+function movieRequestDraft(args: {
+  candidates?: AnyRecord[];
+  selected?: AnyRecord;
+  qualityProfiles: AnyRecord[];
+  rootFolders: AnyRecord[];
+  tags: AnyRecord[];
+  request?: MovieRequestInput;
+}) {
+  return {
+    schema: "media-mcp.requestDraft.v1",
+    kind: "movie",
+    service: "radarr",
+    candidateOptions: args.candidates?.map(movieCandidate) ?? [],
+    selectedCandidate: args.selected ? movieCandidate(args.selected) : undefined,
+    qualityProfileOptions: qualityProfileOptions(args.qualityProfiles),
+    rootFolderOptions: rootFolderOptions(args.rootFolders),
+    tagOptions: tagOptions(args.tags),
+    defaults: {
+      monitored: true,
+      searchNow: true,
+      tagIds: [],
+    },
+    request: args.request,
+    writeGate: {
+      env: "ALLOW_REQUESTS",
+      enabled: safetyStatus().requestToolsEnabled,
+    },
+  };
+}
+
+export async function radarrRequestOptions() {
+  const app = getApp("radarr");
+  const [qualityProfiles, rootFolders, tags] = await Promise.all([
+    arrQualityProfiles(app),
+    arrRootFolders(app),
+    arrTags(app),
+  ]);
+  const summary = `${qualityProfiles.length} Radarr quality profiles and ${rootFolders.length} root folders available.`;
+  return toSummary({
+    summary,
+    view: componentView("Radarr Request Options", summary, [
+      {
+        id: "radarr-options",
+        title: "Options",
+        tone: rootFolders.length > 0 && qualityProfiles.length > 0 ? "ok" : "warning",
+        metrics: [
+          { label: "Quality Profiles", value: qualityProfiles.length },
+          { label: "Root Folders", value: rootFolders.length },
+          { label: "Tags", value: tags.length },
+        ],
+        items: [
+          ...qualityProfileOptions(qualityProfiles).slice(0, 5).map((profile) => ({ label: "Quality", value: profile.label })),
+          ...rootFolderOptions(rootFolders).slice(0, 5).map((folder) => ({ label: "Root", value: folder.path })),
+        ],
+      },
+    ]),
+    requestDraft: movieRequestDraft({ qualityProfiles, rootFolders, tags }),
+  });
+}
+
+export async function searchMovie(query: string, limit = 10) {
+  const app = getApp("radarr");
+  const [results, qualityProfiles, rootFolders, tags] = await Promise.all([
+    radarrMovieLookup(app, query),
+    arrQualityProfiles(app),
+    arrRootFolders(app),
+    arrTags(app),
+  ]);
+  const candidates = results.slice(0, limit);
+  const summary = `${candidates.length} Radarr movie candidates returned for "${query}".`;
+  return toSummary({
+    summary,
+    view: componentView("Movie Search", summary, [
+      {
+        id: "movie-results",
+        title: "Results",
+        tone: candidates.length > 0 ? "info" : "warning",
+        metrics: [{ label: "Candidates", value: candidates.length, tone: candidates.length > 0 ? "info" : "warning" }],
+        items: candidates.map((candidate) => ({
+          label: candidate.title,
+          value: candidate.year ?? "unknown year",
+          detail: candidate.overview,
+          tone: candidate.isExisting ? "ok" : "info",
+        })),
+      },
+    ]),
+    candidates: candidates.map(movieCandidate),
+    requestDraft: movieRequestDraft({ candidates, qualityProfiles, rootFolders, tags }),
+  });
+}
+
+async function validateMovieRequest(input: MovieRequestInput) {
+  const app = getApp("radarr");
+  const tagIds = input.tagIds ?? [];
+  const [lookup, qualityProfiles, rootFolders, tags, existingMovies] = await Promise.all([
+    radarrMovieLookup(app, `tmdb:${input.tmdbId}`),
+    arrQualityProfiles(app),
+    arrRootFolders(app),
+    arrTags(app),
+    radarrMovies(app),
+  ]);
+  const selected = lookup.find((candidate) => Number(candidate.tmdbId) === input.tmdbId);
+  if (!selected) throw new Error(`Radarr could not resolve TMDB ID ${input.tmdbId}`);
+
+  const qualityProfile = qualityProfiles.find((profile) => Number(profile.id) === input.qualityProfileId);
+  if (!qualityProfile) throw new Error(`Quality profile ${input.qualityProfileId} is not available in Radarr`);
+
+  const rootFolder = rootFolders.find((folder) => folder.path === input.rootFolderPath);
+  if (!rootFolder) throw new Error(`Root folder is not available in Radarr: ${input.rootFolderPath}`);
+
+  const unknownTags = tagIds.filter((tagId) => !tags.some((tag) => Number(tag.id) === tagId));
+  if (unknownTags.length > 0) throw new Error(`Radarr tag IDs are not available: ${unknownTags.join(", ")}`);
+
+  const existing = existingMovies.find((movie) => Number(movie.tmdbId) === input.tmdbId);
+  const request: MovieRequestInput = {
+    tmdbId: input.tmdbId,
+    qualityProfileId: input.qualityProfileId,
+    rootFolderPath: input.rootFolderPath,
+    monitored: input.monitored ?? true,
+    searchNow: input.searchNow ?? true,
+    tagIds,
+  };
+  return { app, selected, qualityProfiles, rootFolders, tags, qualityProfile, rootFolder, existing, request };
+}
+
+function radarrAddPayload(selected: AnyRecord, request: MovieRequestInput) {
+  return {
+    ...selected,
+    qualityProfileId: request.qualityProfileId,
+    rootFolderPath: request.rootFolderPath,
+    monitored: request.monitored ?? true,
+    tags: request.tagIds ?? [],
+    addOptions: {
+      searchForMovie: request.searchNow ?? true,
+    },
+  };
+}
+
+export async function previewMovieRequest(input: MovieRequestInput) {
+  const context = await validateMovieRequest(input);
+  const warnings = context.existing ? [`${context.selected.title} already exists in Radarr`] : [];
+  const summary = warnings.length > 0
+    ? `Preview ready for ${context.selected.title}; ${warnings[0]}.`
+    : `Preview ready to request ${context.selected.title} (${context.selected.year}) in Radarr.`;
+  return toSummary({
+    summary,
+    view: componentView("Movie Request Preview", summary, [
+      {
+        id: "movie-request",
+        title: context.selected.title,
+        tone: warnings.length > 0 ? "warning" : "info",
+        metrics: [
+          { label: "Year", value: context.selected.year ?? "unknown" },
+          { label: "Quality", value: context.qualityProfile.name },
+          { label: "Search Now", value: context.request.searchNow ? "yes" : "no" },
+        ],
+        items: [
+          { label: "Root Folder", value: context.rootFolder.path },
+          { label: "Monitored", value: context.request.monitored ? "yes" : "no" },
+          { label: "Tags", value: context.request.tagIds?.length ?? 0 },
+        ],
+      },
+    ]),
+    requestDraft: movieRequestDraft({
+      selected: context.selected,
+      qualityProfiles: context.qualityProfiles,
+      rootFolders: context.rootFolders,
+      tags: context.tags,
+      request: context.request,
+    }),
+    payloadPreview: radarrAddPayload(context.selected, context.request),
+    warnings,
+  });
+}
+
+export async function requestMovie(input: MovieRequestInput) {
+  requireRequestToolsEnabled();
+  const context = await validateMovieRequest(input);
+  if (context.existing) throw new Error(`${context.selected.title} already exists in Radarr`);
+
+  const result = await radarrAddMovie(context.app, radarrAddPayload(context.selected, context.request));
+  const summary = `Requested ${result.title ?? context.selected.title} in Radarr.`;
+  return toSummary({
+    summary,
+    view: componentView("Movie Requested", summary, [
+      {
+        id: "movie-requested",
+        title: "Radarr",
+        tone: "ok",
+        metrics: [
+          { label: "Movie", value: result.title ?? context.selected.title },
+          { label: "Search", value: context.request.searchNow ? "started" : "not started" },
+        ],
+      },
+    ]),
+    movie: {
+      id: result.id,
+      tmdbId: result.tmdbId,
+      title: result.title,
+      year: result.year,
+      monitored: result.monitored,
+    },
   });
 }
 

@@ -19,7 +19,11 @@ import {
   mediaStackModel,
   missingSummary,
   prowlarrSearch,
+  previewMovieRequest,
+  radarrRequestOptions,
   recentActivity,
+  requestMovie,
+  searchMovie,
   serviceHealth,
   serviceStatus,
   slskdStatus,
@@ -33,6 +37,14 @@ const statusApp = appName;
 const libraryApp = z.enum(["sonarr", "radarr", "lidarr"]);
 const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
 const stackFlow = z.enum(["tv", "movies", "music"]);
+const movieRequestInput = {
+  tmdbId: z.number().int().positive(),
+  qualityProfileId: z.number().int().positive(),
+  rootFolderPath: z.string().min(1),
+  monitored: z.boolean().default(true),
+  searchNow: z.boolean().default(true),
+  tagIds: z.array(z.number().int().positive()).default([]),
+};
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;
 
@@ -49,7 +61,7 @@ function tool(handler: ToolHandler) {
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.1.9",
+    version: "0.2.0",
   });
 
   server.registerTool(
@@ -183,7 +195,7 @@ export function createMediaMcpServer() {
     {
       title: "Import Issues",
       description:
-        "Return queue/import warnings and failed recent history items across media services.",
+        "Return queue/import warnings and unresolved failed recent history items across media services.",
       inputSchema: {
         pageSize: z.number().int().min(1).max(100).default(50),
       },
@@ -281,6 +293,48 @@ export function createMediaMcpServer() {
       },
     },
     tool(({ query, type, limit }) => prowlarrSearch(query, type, limit)),
+  );
+
+  server.registerTool(
+    "radarr_request_options",
+    {
+      title: "Radarr Request Options",
+      description: "Return Radarr quality profiles, root folders, tags, and a neutral movie request draft payload.",
+    },
+    tool(() => radarrRequestOptions()),
+  );
+
+  server.registerTool(
+    "search_movie",
+    {
+      title: "Search Movie",
+      description: "Search Radarr movie candidates and return selectable options plus a request draft payload.",
+      inputSchema: {
+        query: z.string().min(1),
+        limit: z.number().int().min(1).max(25).default(10),
+      },
+    },
+    tool(({ query, limit }) => searchMovie(query, limit)),
+  );
+
+  server.registerTool(
+    "preview_movie_request",
+    {
+      title: "Preview Movie Request",
+      description: "Validate a Radarr movie request and return a form-friendly preview without writing.",
+      inputSchema: movieRequestInput,
+    },
+    tool((args) => previewMovieRequest(args)),
+  );
+
+  server.registerTool(
+    "request_movie",
+    {
+      title: "Request Movie",
+      description: "Add an exact selected movie to Radarr. Requires ALLOW_REQUESTS=true.",
+      inputSchema: movieRequestInput,
+    },
+    tool((args) => requestMovie(args)),
   );
 
   server.registerTool(

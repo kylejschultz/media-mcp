@@ -161,13 +161,17 @@ This field is additive. Clients can ignore it and keep reading the existing
 - `get_missing_summary` - missing wanted counts and samples.
 - `indexer_status` - Prowlarr indexer status without credentials.
 - `get_library_counts` - Sonarr/Radarr/Lidarr library counts.
-- `get_import_issues` - queue/import warnings and failed recent history.
+- `get_import_issues` - queue/import warnings and unresolved failed recent history; retry failures that later completed are reported separately as resolved.
 - `media_configured_apps` - list configured apps and missing env vars.
 - `media_system_status` - fetch app version/status.
 - `media_queue` - show normalized download/processing queue for Sonarr, Radarr, Lidarr, or SABnzbd.
 - `media_history` - show normalized recent history/events.
 - `media_calendar` - show Sonarr/Radarr/Lidarr upcoming releases.
 - `media_search` - search indexers through Prowlarr.
+- `radarr_request_options` - list Radarr quality profiles, root folders, tags, and form-friendly request defaults.
+- `search_movie` - search Radarr movie candidates and return selectable request draft options.
+- `preview_movie_request` - validate a Radarr movie request without writing.
+- `request_movie` - add an exact selected movie to Radarr when `ALLOW_REQUESTS=true`.
 - `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
 - `beets_flask_status` - show read-only beets-flask queue, worker, inbox, and library status.
 - `slskd_status` - show read-only slskd Soulseek connection, transfer, and share status.
@@ -182,8 +186,19 @@ This field is additive. Clients can ignore it and keep reading the existing
 SABnzbd has a different API shape from the Arr apps, so its queue/history tools normalize the output separately.
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
 beets-flask support is read-only and uses `BEETS_FLASK_URL`. slskd support is read-only and uses `SLSKD_URL` plus `SLSKD_API_KEY`.
-Phase 1 is intentionally read-only. The overview payload includes a safety card
-showing that write/request/destructive tool tiers are disabled.
+The default runtime is read-only. Search and preview tools are safe by default;
+request/write tools refuse to run unless `ALLOW_REQUESTS=true`.
 The generated stack model is used to interpret expected stack-specific warnings,
 such as Lidarr Completed Download Handling being disabled while beets-flask owns
 music import/tagging.
+Streamable HTTP blocks browser origins by default. Set
+`MEDIA_MCP_ALLOWED_ORIGINS` to a comma-separated allowlist only for trusted
+browser-based clients.
+
+### 2026-06-24 - v0.2.0 Radarr Request Preview
+
+- Refactored shared adapters, formatting helpers, result wrappers, and view helpers out of the main media orchestration module.
+- Added `radarr_request_options`, `search_movie`, `preview_movie_request`, and gated `request_movie`.
+- Added neutral `media-mcp.requestDraft.v1` payloads so OpenClaw/Discord can render search and preview results as form-like flows.
+- Added `ALLOW_REQUESTS`; request/write tools stay disabled unless this is explicitly set to `true`.
+- Hardened Streamable HTTP CORS defaults and redacted upstream response bodies before returning tool errors.

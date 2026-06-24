@@ -16,13 +16,13 @@ type Session = {
 
 const maxBodyBytes = 1024 * 1024;
 const serverName = "media-mcp";
-const serverVersion = "0.1.9";
+const serverVersion = "0.2.0";
 
 class RequestBodyTooLargeError extends Error {}
 class InvalidJsonBodyError extends Error {}
 
 function parseAllowedOrigins(value: string | undefined): string[] {
-  return (value ?? "*")
+  return (value ?? "")
     .split(",")
     .map((origin) => origin.trim())
     .filter(Boolean);
