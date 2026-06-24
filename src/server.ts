@@ -31,6 +31,7 @@ import {
   wantedMissingNormalized,
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
+import { serverVersion } from "./version.js";
 
 const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin", "beets-flask", "slskd"]);
 const statusApp = appName;
@@ -61,7 +62,7 @@ function tool(handler: ToolHandler) {
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.2.0",
+    version: serverVersion,
   });
 
   server.registerTool(

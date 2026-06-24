@@ -208,3 +208,7 @@ browser-based clients.
 - Added media/action hints to `media-mcp.view.v1` cards and items.
 - Included Radarr poster image URLs in movie search and request preview views.
 - Included preview/request action payloads so clients can render form-like controls without scraping plain text.
+
+### 2026-06-24 - v0.2.2 Version Metadata Fix
+
+- Centralized server version metadata so MCP server info and HTTP health output match package releases.

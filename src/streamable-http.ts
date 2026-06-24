@@ -8,6 +8,7 @@ import { StreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/
 import { isInitializeRequest } from "@modelcontextprotocol/sdk/types.js";
 import { configuredApps } from "./config.js";
 import { createMediaMcpServer } from "./server.js";
+import { serverVersion } from "./version.js";
 
 type Session = {
   server: ReturnType<typeof createMediaMcpServer>;
@@ -16,7 +17,6 @@ type Session = {
 
 const maxBodyBytes = 1024 * 1024;
 const serverName = "media-mcp";
-const serverVersion = "0.2.0";
 
 class RequestBodyTooLargeError extends Error {}
 class InvalidJsonBodyError extends Error {}
