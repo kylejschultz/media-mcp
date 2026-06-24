@@ -13,14 +13,31 @@ export type ViewItem = {
   value?: string | number | boolean;
   detail?: string;
   tone?: ViewTone;
+  media?: ViewMedia;
+};
+
+export type ViewMedia = {
+  type: "image";
+  url: string;
+  alt?: string;
+};
+
+export type ViewAction = {
+  id: string;
+  label: string;
+  kind: "preview" | "submit" | "external";
+  disabled?: boolean;
+  payload?: Record<string, unknown>;
 };
 
 export type ViewCard = {
   id: string;
   title: string;
   tone?: ViewTone;
+  media?: ViewMedia;
   metrics?: ViewMetric[];
   items?: ViewItem[];
+  actions?: ViewAction[];
 };
 
 export type ComponentView = {

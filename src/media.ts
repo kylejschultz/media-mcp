@@ -1254,6 +1254,12 @@ function movieCandidate(record: AnyRecord) {
   };
 }
 
+function moviePoster(record: AnyRecord) {
+  return typeof record.remotePoster === "string" && record.remotePoster.length > 0
+    ? { type: "image" as const, url: record.remotePoster, alt: `${record.title ?? "Movie"} poster` }
+    : undefined;
+}
+
 function qualityProfileOptions(records: AnyRecord[]) {
   return records.map((profile) => ({
     id: profile.id,
@@ -1348,6 +1354,8 @@ export async function searchMovie(query: string, limit = 10) {
   ]);
   const candidates = results.slice(0, limit);
   const summary = `${candidates.length} Radarr movie candidates returned for "${query}".`;
+  const defaultQualityProfile = qualityProfiles[0];
+  const defaultRootFolder = rootFolders[0];
   return toSummary({
     summary,
     view: componentView("Movie Search", summary, [
@@ -1355,13 +1363,33 @@ export async function searchMovie(query: string, limit = 10) {
         id: "movie-results",
         title: "Results",
         tone: candidates.length > 0 ? "info" : "warning",
+        media: candidates.length === 1 ? moviePoster(candidates[0]) : undefined,
         metrics: [{ label: "Candidates", value: candidates.length, tone: candidates.length > 0 ? "info" : "warning" }],
         items: candidates.map((candidate) => ({
           label: candidate.title,
           value: candidate.year ?? "unknown year",
           detail: candidate.overview,
           tone: candidate.isExisting ? "ok" : "info",
+          media: moviePoster(candidate),
         })),
+        actions: candidates.length === 1 && defaultQualityProfile && defaultRootFolder
+          ? [
+              {
+                id: "preview-movie-request",
+                label: "Preview request",
+                kind: "preview",
+                payload: {
+                  tool: "preview_movie_request",
+                  tmdbId: candidates[0].tmdbId,
+                  qualityProfileId: defaultQualityProfile.id,
+                  rootFolderPath: defaultRootFolder.path,
+                  monitored: true,
+                  searchNow: true,
+                  tagIds: [],
+                },
+              },
+            ]
+          : undefined,
       },
     ]),
     candidates: candidates.map(movieCandidate),
@@ -1429,6 +1457,7 @@ export async function previewMovieRequest(input: MovieRequestInput) {
         id: "movie-request",
         title: context.selected.title,
         tone: warnings.length > 0 ? "warning" : "info",
+        media: moviePoster(context.selected),
         metrics: [
           { label: "Year", value: context.selected.year ?? "unknown" },
           { label: "Quality", value: context.qualityProfile.name },
@@ -1438,6 +1467,18 @@ export async function previewMovieRequest(input: MovieRequestInput) {
           { label: "Root Folder", value: context.rootFolder.path },
           { label: "Monitored", value: context.request.monitored ? "yes" : "no" },
           { label: "Tags", value: context.request.tagIds?.length ?? 0 },
+        ],
+        actions: [
+          {
+            id: "request-movie",
+            label: safetyStatus().requestToolsEnabled ? "Request movie" : "Requests disabled",
+            kind: "submit",
+            disabled: warnings.length > 0 || !safetyStatus().requestToolsEnabled,
+            payload: {
+              tool: "request_movie",
+              ...context.request,
+            },
+          },
         ],
       },
     ]),

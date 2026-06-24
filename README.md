@@ -202,3 +202,9 @@ browser-based clients.
 - Added neutral `media-mcp.requestDraft.v1` payloads so OpenClaw/Discord can render search and preview results as form-like flows.
 - Added `ALLOW_REQUESTS`; request/write tools stay disabled unless this is explicitly set to `true`.
 - Hardened Streamable HTTP CORS defaults and redacted upstream response bodies before returning tool errors.
+
+### 2026-06-24 - v0.2.1 Request View UX Hints
+
+- Added media/action hints to `media-mcp.view.v1` cards and items.
+- Included Radarr poster image URLs in movie search and request preview views.
+- Included preview/request action payloads so clients can render form-like controls without scraping plain text.
