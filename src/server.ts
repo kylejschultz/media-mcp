@@ -14,6 +14,8 @@ import {
   jellyfinScheduledTasks,
   libraryCounts,
   mediaStackOverview,
+  mediaStackFlow,
+  mediaStackModel,
   missingSummary,
   prowlarrSearch,
   recentActivity,
@@ -28,6 +30,7 @@ const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "je
 const statusApp = appName;
 const libraryApp = z.enum(["sonarr", "radarr", "lidarr"]);
 const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
+const stackFlow = z.enum(["tv", "movies", "music"]);
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;
 
@@ -44,7 +47,7 @@ function tool(handler: ToolHandler) {
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.1.7",
+    version: "0.1.8",
   });
 
   server.registerTool(
@@ -55,6 +58,27 @@ export function createMediaMcpServer() {
         "Return a compact dashboard of service status, health, queues, missing media, disk space, indexers, library counts, and import issues.",
     },
     tool(() => mediaStackOverview()),
+  );
+
+  server.registerTool(
+    "media_stack_model",
+    {
+      title: "Media Stack Model",
+      description: "Return the generated stack model derived from the Media Stack Overview Notion page.",
+    },
+    tool(() => mediaStackModel()),
+  );
+
+  server.registerTool(
+    "media_stack_flow",
+    {
+      title: "Media Stack Flow",
+      description: "Return generated file-flow knowledge for TV, movies, music, or all media types.",
+      inputSchema: {
+        mediaType: stackFlow.optional(),
+      },
+    },
+    tool(({ mediaType }) => mediaStackFlow(mediaType)),
   );
 
   server.registerTool(

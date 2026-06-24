@@ -1,6 +1,7 @@
 import { apps, type AppConfig, type AppName, configuredApps, getApp } from "./config.js";
 import { arrGet, jellyfinGet, sabGet } from "./http.js";
 import { safetyStatus } from "./safety.js";
+import { expectedServiceIssue, getStackFlow, getStackModel, type StackFlowName } from "./stack-model.js";
 
 type AnyRecord = Record<string, any>;
 
@@ -96,6 +97,22 @@ function healthTone(warnings: unknown[] = []): ViewTone {
 
 function serviceLabel(service: string) {
   return apps.find((app) => app.name === service)?.label ?? service;
+}
+
+function normalizeHealthIssues(app: AppConfig, issues: AnyRecord[]) {
+  return issues.map((issue) => {
+    const message = firstString(issue.message, issue.source, issue.type) ?? "health issue";
+    const expected = expectedServiceIssue(app.name, { source: issue.source, message });
+    return {
+      severity: expected ? "expected" : issue.type ?? "warning",
+      source: issue.source,
+      message,
+      wikiUrl: issue.wikiUrl,
+      expected: Boolean(expected),
+      interpretation: expected?.interpretation,
+      verifyWith: expected?.verifyWith,
+    };
+  });
 }
 
 type OperationResult<T> =
@@ -197,6 +214,8 @@ export async function serviceStatus(appName?: AppName) {
         withStatus(app, "health", () => arrHealth(app)),
       ]);
       const issues = health.ok ? health.data : [];
+      const normalizedIssues = normalizeHealthIssues(app, issues);
+      const unexpectedIssues = normalizedIssues.filter((issue) => !issue.expected);
       return {
         service: app.name,
         label: app.label,
@@ -207,10 +226,8 @@ export async function serviceStatus(appName?: AppName) {
         branch: status.ok ? status.data.branch : undefined,
         health: issues.length === 0 ? "ok" : "warning",
         latencyMs: status.latencyMs,
-        warnings: [
-          ...(status.ok ? [] : [status.error]),
-          ...issues.map((issue) => firstString(issue.message, issue.source, issue.type) ?? "health issue"),
-        ],
+        warnings: [...(status.ok ? [] : [status.error]), ...unexpectedIssues.map((issue) => issue.message)],
+        expectedWarnings: normalizedIssues.filter((issue) => issue.expected),
       };
     }),
   );
@@ -265,24 +282,25 @@ export async function serviceHealth(appName?: AppName) {
       }
 
       const result = await withStatus(app, "health", () => arrHealth(app));
-      const issues = result.ok
-        ? result.data.map((issue) => ({
-            severity: issue.type ?? "warning",
-            source: issue.source,
-            message: firstString(issue.message, issue.source, issue.type) ?? "health issue",
-            wikiUrl: issue.wikiUrl,
-          }))
-        : [{ severity: "error", message: result.error }];
+      const issues = result.ok ? normalizeHealthIssues(app, result.data) : [{ severity: "error", message: result.error, expected: false }];
+      const unexpectedIssues = issues.filter((issue) => !issue.expected);
       return {
         service: app.name,
-        ok: result.ok && issues.length === 0,
-        health: issues.length === 0 ? "ok" : "warning",
+        ok: result.ok && unexpectedIssues.length === 0,
+        health: unexpectedIssues.length === 0 ? "ok" : "warning",
         issues,
+        expectedIssues: issues.filter((issue) => issue.expected),
       };
     }),
   );
-  const issueCount = services.reduce((sum, service) => sum + service.issues.length, 0);
-  const summary = issueCount === 0 ? "No health issues reported by configured services." : `${issueCount} health issues reported.`;
+  const issueCount = services.reduce((sum, service) => sum + service.issues.filter((issue: AnyRecord) => !issue.expected).length, 0);
+  const expectedCount = services.reduce((sum, service) => sum + service.issues.filter((issue: AnyRecord) => issue.expected).length, 0);
+  const summary =
+    issueCount === 0
+      ? expectedCount === 0
+        ? "No health issues reported by configured services."
+        : `No unexpected health issues reported; ${expectedCount} expected stack-design warning noted.`
+      : `${issueCount} unexpected health issues reported; ${expectedCount} expected stack-design warnings noted.`;
   return toSummary({
     summary,
     view: componentView("Service Health", summary, [
@@ -290,7 +308,10 @@ export async function serviceHealth(appName?: AppName) {
         id: "health",
         title: "Health",
         tone: countTone(issueCount),
-        metrics: [{ label: "Issues", value: issueCount, tone: countTone(issueCount) }],
+        metrics: [
+          { label: "Unexpected Issues", value: issueCount, tone: countTone(issueCount) },
+          { label: "Expected Warnings", value: expectedCount, tone: expectedCount > 0 ? "info" : "ok" },
+        ],
         items: services.map((service) => ({
           label: serviceLabel(service.service),
           value: service.health,
@@ -935,7 +956,14 @@ export async function mediaStackOverview() {
   const issueSummary = issues as AnyRecord;
   const queueTotal = ((queues.services as AnyRecord[]) ?? []).reduce((sum, service) => sum + Number(service.total ?? 0), 0);
   const healthServices = (health.services as AnyRecord[]) ?? [];
-  const healthIssueCount = healthServices.reduce((sum, service) => sum + Number(service.issues?.length ?? 0), 0);
+  const healthIssueCount = healthServices.reduce(
+    (sum, service) => sum + Number(service.issues?.filter((issue: AnyRecord) => !issue.expected).length ?? 0),
+    0,
+  );
+  const expectedHealthIssueCount = healthServices.reduce(
+    (sum, service) => sum + Number(service.issues?.filter((issue: AnyRecord) => issue.expected).length ?? 0),
+    0,
+  );
   const missingTotal = ((missing.services as AnyRecord[]) ?? []).reduce((sum, service) => sum + Number(service.total ?? 0), 0);
   const diskWarnings = Array.isArray(disks.warnings) ? disks.warnings.length : 0;
   const importIssueCount = Number(issueSummary.queueIssues?.length ?? 0) + Number(issueSummary.failedHistory?.length ?? 0);
@@ -950,6 +978,7 @@ export async function mediaStackOverview() {
         metrics: [
           { label: "Reachable", value: `${reachable}/${services.length}`, tone: reachable === services.length ? "ok" : "warning" },
           { label: "Health Issues", value: healthIssueCount, tone: countTone(healthIssueCount) },
+          { label: "Expected Warnings", value: expectedHealthIssueCount, tone: expectedHealthIssueCount > 0 ? "info" : "ok" },
         ],
         items: services.map((service) => ({
           label: service.label,
@@ -987,6 +1016,15 @@ export async function mediaStackOverview() {
           { label: "Write Tools", value: safetyStatus.writeToolsEnabled ? "enabled" : "disabled", tone: safetyStatus.writeToolsEnabled ? "warning" : "ok" },
         ],
       },
+      {
+        id: "stack-model",
+        title: "Stack Model",
+        tone: "ok",
+        metrics: [
+          { label: "Flows", value: Object.keys(getStackModel().flows).length },
+          { label: "Expectations", value: getStackModel().expectations.serviceIssues.length },
+        ],
+      },
     ]),
     status,
     health,
@@ -997,6 +1035,53 @@ export async function mediaStackOverview() {
     libraries,
     issues,
     safety: safetyStatus,
+  });
+}
+
+export async function mediaStackModel() {
+  const model = getStackModel();
+  const flowCount = Object.keys(model.flows).length;
+  const summary = `Generated stack model loaded from ${model.source.title}; ${flowCount} media flows and ${model.expectations.serviceIssues.length} stack-aware service expectations.`;
+  return toSummary({
+    summary,
+    view: componentView("Stack Model", summary, [
+      {
+        id: "source",
+        title: "Source",
+        tone: "ok",
+        metrics: [
+          { label: "Flows", value: flowCount },
+          { label: "Expectations", value: model.expectations.serviceIssues.length },
+        ],
+        items: [
+          { label: "Source", value: model.source.title, detail: model.source.pageId },
+          { label: "Last Reviewed", value: model.source.lastReviewed },
+        ],
+      },
+    ]),
+    model,
+  });
+}
+
+export async function mediaStackFlow(mediaType?: StackFlowName) {
+  const flow = getStackFlow(mediaType);
+  const summary = mediaType ? `${getStackModel().flows[mediaType].label} flow loaded from generated stack model.` : "All media flows loaded from generated stack model.";
+  return toSummary({
+    summary,
+    view: componentView("Media Flow", summary, [
+      {
+        id: "flows",
+        title: mediaType ? getStackModel().flows[mediaType].label : "Flows",
+        tone: "ok",
+        metrics: [{ label: "Flows", value: mediaType ? 1 : Object.keys(getStackModel().flows).length }],
+        items: Object.entries(mediaType ? { [mediaType]: getStackModel().flows[mediaType] } : getStackModel().flows).map(([key, value]) => ({
+          label: value.label,
+          value: value.importAuthority.join(", "),
+          detail: `${key}: ${value.downloaders.join(", ")} -> ${value.library.join(", ")}`,
+        })),
+      },
+    ]),
+    flow,
   });
 }
 

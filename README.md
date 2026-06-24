@@ -151,6 +151,8 @@ This field is additive. Clients can ignore it and keep reading the existing
 ## Tools
 
 - `media_stack_overview` - compact dashboard across status, health, queues, missing media, disk space, indexers, library counts, and import issues.
+- `media_stack_model` - generated stack knowledge derived from the Media Stack Overview Notion page.
+- `media_stack_flow` - generated file-flow knowledge for TV, movies, music, or all media types.
 - `service_status` - normalized reachability/auth/version checks.
 - `service_health` - health issues from configured services.
 - `disk_space` - service-visible disk space from media library Arr applications; Prowlarr is skipped because it does not own media storage.
@@ -179,3 +181,6 @@ SABnzbd has a different API shape from the Arr apps, so its queue/history tools 
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
 Phase 1 is intentionally read-only. The overview payload includes a safety card
 showing that write/request/destructive tool tiers are disabled.
+The generated stack model is used to interpret expected stack-specific warnings,
+such as Lidarr Completed Download Handling being disabled while beets-flask owns
+music import/tagging.
