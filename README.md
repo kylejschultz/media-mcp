@@ -212,3 +212,9 @@ browser-based clients.
 ### 2026-06-24 - v0.2.2 Version Metadata Fix
 
 - Centralized server version metadata so MCP server info and HTTP health output match package releases.
+
+### 2026-06-24 - v0.2.3 Discord Request Components
+
+- Added ready-to-render Discord component specs to Radarr movie search and preview responses.
+- Movie search now includes a selectable dropdown for ambiguous results, with compact command callbacks for preview follow-up.
+- Movie preview now includes a poster-backed request component with the submit action disabled while `ALLOW_REQUESTS=false`.

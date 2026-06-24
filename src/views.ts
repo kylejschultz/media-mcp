@@ -30,6 +30,46 @@ export type ViewAction = {
   payload?: Record<string, unknown>;
 };
 
+export type DiscordComponentOption = {
+  label: string;
+  value: string;
+  description?: string;
+};
+
+export type DiscordComponentSpec = {
+  container?: {
+    accentColor?: string;
+  };
+  blocks: Array<
+    | { type: "text"; text: string }
+    | {
+        type: "section";
+        text?: string;
+        texts?: string[];
+        accessory?: { type: "thumbnail"; url: string };
+      }
+    | { type: "separator" }
+    | {
+        type: "actions";
+        buttons?: Array<{
+          label: string;
+          style?: "primary" | "secondary" | "success" | "danger" | "link";
+          callbackData?: string;
+          callbackDataKind?: "command" | "callback";
+          disabled?: boolean;
+        }>;
+        select?: {
+          type: "string";
+          placeholder?: string;
+          minValues?: number;
+          maxValues?: number;
+          callbackDataKind?: "command" | "callback";
+          options: DiscordComponentOption[];
+        };
+      }
+  >;
+};
+
 export type ViewCard = {
   id: string;
   title: string;

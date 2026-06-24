@@ -26,7 +26,7 @@ import { toSummary, withStatus } from "./results.js";
 import { requireRequestToolsEnabled, safetyStatus } from "./safety.js";
 import { expectedServiceIssue, getStackFlow, getStackModel, type StackFlowName } from "./stack-model.js";
 import { diskApps, libraryApps, queueApps, type AnyRecord, type LibraryAppName, type QueueAppName } from "./types.js";
-import { componentView, countTone, healthTone, serviceLabel } from "./views.js";
+import { componentView, countTone, healthTone, serviceLabel, type DiscordComponentSpec } from "./views.js";
 
 function configuredTargets(appName?: AppName) {
   return appName ? [getApp(appName)] : apps.filter((app) => app.url && (!app.keyEnv || app.apiKey));
@@ -1314,6 +1314,98 @@ function movieRequestDraft(args: {
   };
 }
 
+function truncateComponentText(value: unknown, maxLength: number) {
+  const text = String(value ?? "").trim();
+  if (text.length <= maxLength) return text;
+  return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
+}
+
+function movieLabel(record: AnyRecord) {
+  return truncateComponentText(`${record.title ?? "Untitled"}${record.year ? ` (${record.year})` : ""}`, 100);
+}
+
+function movieDescription(record: AnyRecord) {
+  const pieces = [
+    record.isExisting ? "Already in Radarr" : undefined,
+    Array.isArray(record.genres) ? record.genres.slice(0, 2).join(", ") : undefined,
+    record.certification,
+  ].filter(Boolean);
+  return pieces.length > 0 ? truncateComponentText(pieces.join(" | "), 100) : undefined;
+}
+
+function moviePreviewCommand(record: AnyRecord) {
+  return `Preview Radarr movie TMDB ${record.tmdbId} with default request options`;
+}
+
+function discordMovieSearchComponents(query: string, summary: string, candidates: AnyRecord[]): DiscordComponentSpec | undefined {
+  if (candidates.length === 0) return;
+  const featured = candidates[0];
+  const poster = moviePoster(featured);
+  return {
+    container: { accentColor: "#2f81f7" },
+    blocks: [
+      { type: "text", text: `**Movie Search**\n${summary}` },
+      {
+        type: "section",
+        text: `Pick the exact match for "${truncateComponentText(query, 80)}".`,
+        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
+      },
+      {
+        type: "actions",
+        select: {
+          type: "string",
+          placeholder: "Choose a movie to preview",
+          minValues: 1,
+          maxValues: 1,
+          callbackDataKind: "command",
+          options: candidates.slice(0, 25).map((candidate) => ({
+            label: movieLabel(candidate),
+            value: moviePreviewCommand(candidate),
+            description: movieDescription(candidate),
+          })),
+        },
+      },
+    ],
+  };
+}
+
+function discordMoviePreviewComponents(args: {
+  summary: string;
+  selected: AnyRecord;
+  request: MovieRequestInput;
+  qualityProfile: AnyRecord;
+  rootFolder: AnyRecord;
+  disabled: boolean;
+}): DiscordComponentSpec {
+  const poster = moviePoster(args.selected);
+  return {
+    container: { accentColor: args.disabled ? "#9a6700" : "#1a7f37" },
+    blocks: [
+      {
+        type: "section",
+        texts: [
+          `**${movieLabel(args.selected)}**`,
+          args.summary,
+          `Quality: ${args.qualityProfile.name}\nRoot: ${args.rootFolder.path}\nSearch now: ${args.request.searchNow ? "yes" : "no"}`,
+        ],
+        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
+      },
+      {
+        type: "actions",
+        buttons: [
+          {
+            label: args.disabled ? "Requests disabled" : "Request movie",
+            style: args.disabled ? "secondary" : "success",
+            disabled: args.disabled,
+            callbackData: `Request Radarr movie TMDB ${args.request.tmdbId}`,
+            callbackDataKind: "command",
+          },
+        ],
+      },
+    ],
+  };
+}
+
 export async function radarrRequestOptions() {
   const app = getApp("radarr");
   const [qualityProfiles, rootFolders, tags] = await Promise.all([
@@ -1392,6 +1484,7 @@ export async function searchMovie(query: string, limit = 10) {
           : undefined,
       },
     ]),
+    components: discordMovieSearchComponents(query, summary, candidates),
     candidates: candidates.map(movieCandidate),
     requestDraft: movieRequestDraft({ candidates, qualityProfiles, rootFolders, tags }),
   });
@@ -1488,6 +1581,14 @@ export async function previewMovieRequest(input: MovieRequestInput) {
       rootFolders: context.rootFolders,
       tags: context.tags,
       request: context.request,
+    }),
+    components: discordMoviePreviewComponents({
+      summary,
+      selected: context.selected,
+      request: context.request,
+      qualityProfile: context.qualityProfile,
+      rootFolder: context.rootFolder,
+      disabled: warnings.length > 0 || !safetyStatus().requestToolsEnabled,
     }),
     payloadPreview: radarrAddPayload(context.selected, context.request),
     warnings,
