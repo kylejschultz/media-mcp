@@ -8,6 +8,11 @@ import {
   history,
   importIssues,
   indexerStatus,
+  jellyfinActiveSessions,
+  jellyfinInfo,
+  jellyfinLibraryCounts,
+  jellyfinRecentActivity,
+  jellyfinScheduledTasks,
   libraryCounts,
   mediaStackOverview,
   missingSummary,
@@ -21,14 +26,15 @@ import {
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
 
-const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd"]);
+const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin"]);
+const statusApp = appName;
 const libraryApp = z.enum(["sonarr", "radarr", "lidarr"]);
 const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
 
 export function createMediaMcpServer() {
   const server = new McpServer({
     name: "media-mcp",
-    version: "0.1.5",
+    version: "0.1.6",
   });
 
   server.registerTool(
@@ -54,7 +60,7 @@ export function createMediaMcpServer() {
       description:
         "Check reachability, auth, version, and warning summary for one service or all configured services.",
       inputSchema: {
-        service: appName.optional(),
+        service: statusApp.optional(),
       },
     },
     async ({ service }) => {
@@ -72,7 +78,7 @@ export function createMediaMcpServer() {
       title: "Service Health",
       description: "Return health issues from configured media services.",
       inputSchema: {
-        service: appName.optional(),
+        service: statusApp.optional(),
       },
     },
     async ({ service }) => {
@@ -226,7 +232,7 @@ export function createMediaMcpServer() {
       description:
         "Fetch version/status information from one configured app or all configured apps.",
       inputSchema: {
-        app: appName.optional(),
+        app: statusApp.optional(),
       },
     },
     async ({ app }) => {
@@ -331,6 +337,84 @@ export function createMediaMcpServer() {
     async ({ query, type, limit }) => {
       try {
         return jsonText(await prowlarrSearch(query, type, limit));
+      } catch (error) {
+        return errorText(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jellyfin_system_info",
+    {
+      title: "Jellyfin System Info",
+      description: "Return Jellyfin server version and basic system information.",
+    },
+    async () => {
+      try {
+        return jsonText(await jellyfinInfo());
+      } catch (error) {
+        return errorText(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jellyfin_library_counts",
+    {
+      title: "Jellyfin Library Counts",
+      description: "Return read-only Jellyfin item counts for major library types.",
+    },
+    async () => {
+      try {
+        return jsonText(await jellyfinLibraryCounts());
+      } catch (error) {
+        return errorText(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jellyfin_active_sessions",
+    {
+      title: "Jellyfin Active Sessions",
+      description: "Return active Jellyfin sessions with user/client/playback summary.",
+    },
+    async () => {
+      try {
+        return jsonText(await jellyfinActiveSessions());
+      } catch (error) {
+        return errorText(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jellyfin_recent_activity",
+    {
+      title: "Jellyfin Recent Activity",
+      description: "Return recent Jellyfin activity log entries.",
+      inputSchema: {
+        pageSize: z.number().int().min(1).max(100).default(20),
+      },
+    },
+    async ({ pageSize }) => {
+      try {
+        return jsonText(await jellyfinRecentActivity(pageSize));
+      } catch (error) {
+        return errorText(error);
+      }
+    },
+  );
+
+  server.registerTool(
+    "jellyfin_scheduled_tasks",
+    {
+      title: "Jellyfin Scheduled Tasks",
+      description: "Return Jellyfin scheduled task state and last execution summaries.",
+    },
+    async () => {
+      try {
+        return jsonText(await jellyfinScheduledTasks());
       } catch (error) {
         return errorText(error);
       }

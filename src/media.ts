@@ -1,11 +1,12 @@
 import { apps, type AppConfig, type AppName, configuredApps, getApp } from "./config.js";
-import { arrGet, sabGet } from "./http.js";
+import { arrGet, jellyfinGet, sabGet } from "./http.js";
 
 type AnyRecord = Record<string, any>;
 
 export type ArrAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr" | "prowlarr">;
 export type LibraryAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr">;
 export type QueueAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr" | "sabnzbd">;
+export type JellyfinAppName = Extract<AppName, "jellyfin">;
 
 const libraryApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
 const queueApps: QueueAppName[] = ["sonarr", "radarr", "lidarr", "sabnzbd"];
@@ -116,6 +117,14 @@ async function sabVersion(app: AppConfig) {
   return sabGet<{ version?: string }>(app, "version");
 }
 
+async function jellyfinSystemInfo(app: AppConfig) {
+  return jellyfinGet<AnyRecord>(app, "System/Info");
+}
+
+function configuredJellyfin() {
+  return getApp("jellyfin");
+}
+
 export async function systemStatus(appName?: AppName) {
   const targets = configuredTargets(appName);
   return Promise.all(
@@ -123,6 +132,20 @@ export async function systemStatus(appName?: AppName) {
       if (app.kind === "sabnzbd") {
         const result = await withStatus(app, "version", () => sabVersion(app));
         return result.ok ? { app: app.name, label: app.label, ok: true, version: result.data.version } : result;
+      }
+      if (app.kind === "jellyfin") {
+        const result = await withStatus(app, "System/Info", () => jellyfinSystemInfo(app));
+        return result.ok
+          ? {
+              app: app.name,
+              label: app.label,
+              ok: true,
+              version: result.data.Version,
+              serverName: result.data.ServerName,
+              operatingSystem: result.data.OperatingSystem,
+              startupWizardCompleted: result.data.StartupWizardCompleted,
+            }
+          : result;
       }
       const result = await withStatus(app, "system/status", () => arrStatus(app));
       return result.ok ? { app: app.name, label: app.label, ok: true, ...result.data } : result;
@@ -142,6 +165,21 @@ export async function serviceStatus(appName?: AppName) {
           reachable: result.ok,
           authenticated: result.ok,
           version: result.ok ? result.data.version : undefined,
+          latencyMs: result.latencyMs,
+          warnings: result.ok ? [] : [result.error],
+        };
+      }
+      if (app.kind === "jellyfin") {
+        const result = await withStatus(app, "System/Info", () => jellyfinSystemInfo(app));
+        return {
+          service: app.name,
+          label: app.label,
+          configured: true,
+          reachable: result.ok,
+          authenticated: result.ok,
+          version: result.ok ? result.data.Version : undefined,
+          branch: undefined,
+          health: result.ok ? "ok" : "error",
           latencyMs: result.latencyMs,
           warnings: result.ok ? [] : [result.error],
         };
@@ -202,6 +240,15 @@ export async function serviceHealth(appName?: AppName) {
     configuredTargets(appName).map(async (app) => {
       if (app.kind === "sabnzbd") {
         const result = await withStatus(app, "queue", () => sabGet<AnyRecord>(app, "queue"));
+        return {
+          service: app.name,
+          ok: result.ok,
+          health: result.ok ? "ok" : "error",
+          issues: result.ok ? [] : [{ severity: "error", message: result.error }],
+        };
+      }
+      if (app.kind === "jellyfin") {
+        const result = await withStatus(app, "System/Info", () => jellyfinSystemInfo(app));
         return {
           service: app.name,
           ok: result.ok,
@@ -381,6 +428,7 @@ export async function downloadQueue(appName?: QueueAppName, pageSize = 50) {
 export async function history(appName: AppName, pageSize = 20) {
   const app = getApp(appName);
   if (app.kind === "sabnzbd") return sabGet(app, "history", { limit: pageSize });
+  if (app.kind === "jellyfin") return jellyfinActivity(pageSize);
   return arrGet(app, "history", { page: 1, pageSize, sortKey: "date", sortDirection: "descending" });
 }
 
@@ -407,13 +455,30 @@ function normalizeSabHistory(app: AppConfig, response: AnyRecord) {
   }));
 }
 
+function normalizeJellyfinActivity(app: AppConfig, response: AnyRecord) {
+  const items: AnyRecord[] = Array.isArray(response.Items) ? response.Items : [];
+  return items.map((item) => ({
+    service: app.name,
+    title: firstString(item.Name, item.ShortOverview, item.Overview) ?? "activity",
+    eventType: firstString(item.Type, item.Severity) ?? "activity",
+    date: item.Date,
+    userName: item.UserName,
+    successful: item.Severity ? String(item.Severity).toLowerCase() !== "error" : undefined,
+  }));
+}
+
 export async function recentActivity(appName?: AppName, pageSize = 20) {
   const targets = configuredTargets(appName);
   const services = await Promise.all(
     targets.map(async (app) => {
       const result = await withStatus(app, "history", () => history(app.name, pageSize));
       if (!result.ok) return { service: app.name, ok: false, items: [], warnings: [result.error] };
-      const items = app.kind === "sabnzbd" ? normalizeSabHistory(app, result.data as AnyRecord) : normalizeArrHistory(app, result.data as AnyRecord);
+      const items =
+        app.kind === "sabnzbd"
+          ? normalizeSabHistory(app, result.data as AnyRecord)
+          : app.kind === "jellyfin"
+            ? normalizeJellyfinActivity(app, result.data as AnyRecord)
+            : normalizeArrHistory(app, result.data as AnyRecord);
       return { service: app.name, ok: true, items };
     }),
   );
@@ -474,23 +539,193 @@ export async function missingSummary(pageSize = 10) {
   });
 }
 
+export async function jellyfinInfo() {
+  const app = configuredJellyfin();
+  const result = await withStatus(app, "System/Info", () => jellyfinSystemInfo(app));
+  const summary = result.ok
+    ? `Jellyfin ${result.data.Version ?? "unknown version"} is reachable.`
+    : `Jellyfin system info failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: componentView("Jellyfin System", summary, [
+      {
+        id: "system",
+        title: "System",
+        tone: result.ok ? "ok" : "error",
+        metrics: [
+          { label: "Reachable", value: result.ok ? "yes" : "no", tone: result.ok ? "ok" : "error" },
+          { label: "Version", value: result.ok ? result.data.Version ?? "unknown" : "unknown" },
+        ],
+        items: result.ok
+          ? [
+              { label: "Server", value: result.data.ServerName ?? "unknown" },
+              { label: "OS", value: result.data.OperatingSystem ?? "unknown" },
+            ]
+          : [{ label: "Error", detail: result.error, tone: "error" }],
+      },
+    ]),
+    ok: result.ok,
+    info: result.ok ? result.data : undefined,
+    warnings: result.ok ? [] : [result.error],
+  });
+}
+
+export async function jellyfinLibraryCounts() {
+  const app = configuredJellyfin();
+  const result = await withStatus(app, "Items/Counts", () => jellyfinGet<AnyRecord>(app, "Items/Counts"));
+  const counts = result.ok ? result.data : {};
+  const summary = result.ok ? "Jellyfin library counts loaded." : `Jellyfin library counts failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: componentView("Jellyfin Libraries", summary, [
+      {
+        id: "libraries",
+        title: "Libraries",
+        tone: result.ok ? "ok" : "error",
+        metrics: [
+          { label: "Movies", value: counts.MovieCount ?? "unknown" },
+          { label: "Series", value: counts.SeriesCount ?? "unknown" },
+          { label: "Episodes", value: counts.EpisodeCount ?? "unknown" },
+          { label: "Songs", value: counts.SongCount ?? "unknown" },
+        ],
+      },
+    ]),
+    ok: result.ok,
+    counts,
+    warnings: result.ok ? [] : [result.error],
+  });
+}
+
+export async function jellyfinActiveSessions() {
+  const app = configuredJellyfin();
+  const result = await withStatus(app, "Sessions", () => jellyfinGet<AnyRecord[]>(app, "Sessions"));
+  const sessions = result.ok ? result.data : [];
+  const summary = result.ok ? `${sessions.length} Jellyfin sessions returned.` : `Jellyfin sessions failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: componentView("Jellyfin Sessions", summary, [
+      {
+        id: "sessions",
+        title: "Active Sessions",
+        tone: result.ok ? "ok" : "error",
+        metrics: [{ label: "Sessions", value: sessions.length, tone: sessions.length > 0 ? "info" : "ok" }],
+        items: sessions.slice(0, 10).map((session) => ({
+          label: firstString(session.UserName, session.Client, session.DeviceName) ?? "session",
+          value: firstString(session.NowPlayingItem?.Name, session.Client) ?? "idle",
+          detail: firstString(session.DeviceName, session.RemoteEndPoint),
+          tone: session.NowPlayingItem ? "info" : "ok",
+        })),
+      },
+    ]),
+    ok: result.ok,
+    sessions: sessions.map((session) => ({
+      userName: session.UserName,
+      client: session.Client,
+      deviceName: session.DeviceName,
+      nowPlaying: session.NowPlayingItem?.Name,
+      playState: session.PlayState,
+      lastActivityDate: session.LastActivityDate,
+    })),
+    warnings: result.ok ? [] : [result.error],
+  });
+}
+
+export async function jellyfinActivity(pageSize = 20) {
+  const app = configuredJellyfin();
+  return jellyfinGet<AnyRecord>(app, "System/ActivityLog/Entries", { limit: pageSize });
+}
+
+export async function jellyfinRecentActivity(pageSize = 20) {
+  const app = configuredJellyfin();
+  const result = await withStatus(app, "System/ActivityLog/Entries", () => jellyfinActivity(pageSize));
+  const items = result.ok ? normalizeJellyfinActivity(app, result.data) : [];
+  const summary = result.ok ? `${items.length} Jellyfin activity items returned.` : `Jellyfin activity failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: componentView("Jellyfin Activity", summary, [
+      {
+        id: "activity",
+        title: "Recent Activity",
+        tone: result.ok ? "ok" : "error",
+        metrics: [{ label: "Items", value: items.length }],
+        items: items.slice(0, 10).map((item) => ({
+          label: item.eventType ?? "activity",
+          detail: item.title,
+          value: item.date,
+          tone: item.successful === false ? "warning" : "info",
+        })),
+      },
+    ]),
+    ok: result.ok,
+    items,
+    warnings: result.ok ? [] : [result.error],
+  });
+}
+
+export async function jellyfinScheduledTasks() {
+  const app = configuredJellyfin();
+  const result = await withStatus(app, "ScheduledTasks", () => jellyfinGet<AnyRecord[]>(app, "ScheduledTasks"));
+  const tasks = result.ok ? result.data : [];
+  const running = tasks.filter((task) => String(task.State ?? "").toLowerCase() === "running");
+  const failed = tasks.filter((task) => String(task.LastExecutionResult?.Status ?? "").toLowerCase() === "failed");
+  const summary = result.ok ? `${tasks.length} Jellyfin scheduled tasks returned; ${running.length} running.` : `Jellyfin scheduled tasks failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: componentView("Jellyfin Tasks", summary, [
+      {
+        id: "tasks",
+        title: "Scheduled Tasks",
+        tone: failed.length > 0 ? "warning" : result.ok ? "ok" : "error",
+        metrics: [
+          { label: "Tasks", value: tasks.length },
+          { label: "Running", value: running.length, tone: running.length > 0 ? "info" : "ok" },
+          { label: "Failed Last Run", value: failed.length, tone: countTone(failed.length) },
+        ],
+        items: tasks.slice(0, 10).map((task) => ({
+          label: task.Name ?? task.Key ?? "task",
+          value: task.State ?? task.LastExecutionResult?.Status,
+          detail: task.LastExecutionResult?.EndTimeUtc,
+          tone: String(task.LastExecutionResult?.Status ?? "").toLowerCase() === "failed" ? "warning" : "ok",
+        })),
+      },
+    ]),
+    ok: result.ok,
+    tasks: tasks.map((task) => ({
+      name: task.Name,
+      key: task.Key,
+      state: task.State,
+      lastExecutionResult: task.LastExecutionResult,
+    })),
+    warnings: result.ok ? [] : [result.error],
+  });
+}
+
 export async function libraryCounts() {
-  const [sonarrSeries, radarrMovies, lidarrArtists, lidarrAlbums] = await Promise.all([
+  const jellyfinConfigured = apps.some((app) => app.name === "jellyfin" && app.url && app.apiKey);
+  const [sonarrSeries, radarrMovies, lidarrArtists, lidarrAlbums, jellyfinCounts] = await Promise.all([
     withStatus(getApp("sonarr"), "series", () => arrGet<AnyRecord[]>(getApp("sonarr"), "series")),
     withStatus(getApp("radarr"), "movie", () => arrGet<AnyRecord[]>(getApp("radarr"), "movie")),
     withStatus(getApp("lidarr"), "artist", () => arrGet<AnyRecord[]>(getApp("lidarr"), "artist")),
     withStatus(getApp("lidarr"), "album", () => arrGet<AnyRecord[]>(getApp("lidarr"), "album")),
+    jellyfinConfigured
+      ? withStatus(getApp("jellyfin"), "Items/Counts", () => jellyfinGet<AnyRecord>(getApp("jellyfin"), "Items/Counts"))
+      : Promise.resolve(undefined),
   ]);
   const counts = {
     sonarrSeries: sonarrSeries.ok ? sonarrSeries.data.length : undefined,
     radarrMovies: radarrMovies.ok ? radarrMovies.data.length : undefined,
     lidarrArtists: lidarrArtists.ok ? lidarrArtists.data.length : undefined,
     lidarrAlbums: lidarrAlbums.ok ? lidarrAlbums.data.length : undefined,
+    jellyfinMovies: jellyfinCounts?.ok ? jellyfinCounts.data.MovieCount : undefined,
+    jellyfinSeries: jellyfinCounts?.ok ? jellyfinCounts.data.SeriesCount : undefined,
+    jellyfinEpisodes: jellyfinCounts?.ok ? jellyfinCounts.data.EpisodeCount : undefined,
+    jellyfinSongs: jellyfinCounts?.ok ? jellyfinCounts.data.SongCount : undefined,
   };
-  const results = [sonarrSeries, radarrMovies, lidarrArtists, lidarrAlbums];
+  const results = [sonarrSeries, radarrMovies, lidarrArtists, lidarrAlbums, jellyfinCounts].filter((result) => result !== undefined);
   const warnings = results.filter((result) => !result.ok).map((result) => `${result.app}: ${result.error}`);
   const loaded = Object.values(counts).filter((value) => value !== undefined).length;
-  const summary = `Library counts loaded for ${loaded}/4 categories.`;
+  const expected = jellyfinConfigured ? 8 : 4;
+  const summary = `Library counts loaded for ${loaded}/${expected} categories.`;
   return toSummary({
     summary,
     view: componentView("Library Counts", summary, [
@@ -503,6 +738,12 @@ export async function libraryCounts() {
           { label: "Movies", value: counts.radarrMovies ?? "unknown" },
           { label: "Artists", value: counts.lidarrArtists ?? "unknown" },
           { label: "Albums", value: counts.lidarrAlbums ?? "unknown" },
+          ...(jellyfinConfigured
+            ? [
+                { label: "Jellyfin Movies", value: counts.jellyfinMovies ?? "unknown" },
+                { label: "Jellyfin Episodes", value: counts.jellyfinEpisodes ?? "unknown" },
+              ]
+            : []),
         ],
       },
     ]),

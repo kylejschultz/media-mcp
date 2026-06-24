@@ -62,6 +62,25 @@ export async function sabGet<T>(app: AppConfig, mode: string, params: Record<str
   return readJson<T>(response, app.label);
 }
 
+export async function jellyfinGet<T>(app: AppConfig, path: string, params: Record<string, string | number | boolean | undefined> = {}) {
+  if (!app.url || !app.apiKey) throw new Error(`${app.label} is not configured`);
+
+  const url = new URL(`/${trimSlashes(path)}`, app.url);
+  for (const [key, value] of Object.entries(params)) {
+    if (value !== undefined) url.searchParams.set(key, String(value));
+  }
+
+  const response = await fetch(url, {
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      Authorization: `MediaBrowser Token="${app.apiKey}"`,
+      "X-Emby-Token": app.apiKey,
+      Accept: "application/json",
+    },
+  });
+  return readJson<T>(response, app.label);
+}
+
 export function jsonText(value: unknown) {
   return {
     content: [{ type: "text" as const, text: JSON.stringify(value, null, 2) }],

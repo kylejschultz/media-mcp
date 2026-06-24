@@ -14,12 +14,12 @@ for (const path of envFiles) {
   }
 }
 
-export type AppName = "sonarr" | "radarr" | "lidarr" | "prowlarr" | "sabnzbd";
+export type AppName = "sonarr" | "radarr" | "lidarr" | "prowlarr" | "sabnzbd" | "jellyfin";
 
 export type AppConfig = {
   name: AppName;
   label: string;
-  kind: "arr" | "sabnzbd";
+  kind: "arr" | "sabnzbd" | "jellyfin";
   apiVersion?: "v1" | "v3";
   url?: string;
   apiKey?: string;
@@ -38,6 +38,7 @@ const appDefs: Array<Omit<AppConfig, "url" | "apiKey"> & { urlEnv: string; keyEn
   { name: "lidarr", label: "Lidarr", kind: "arr", apiVersion: "v1", urlEnv: "LIDARR_URL", keyEnv: "LIDARR_API_KEY" },
   { name: "prowlarr", label: "Prowlarr", kind: "arr", apiVersion: "v1", urlEnv: "PROWLARR_URL", keyEnv: "PROWLARR_API_KEY" },
   { name: "sabnzbd", label: "SABnzbd", kind: "sabnzbd", urlEnv: "SABNZBD_URL", keyEnv: "SABNZBD_API_KEY" },
+  { name: "jellyfin", label: "Jellyfin", kind: "jellyfin", urlEnv: "JELLYFIN_URL", keyEnv: "JELLYFIN_API_KEY" },
 ];
 
 export const apps: AppConfig[] = appDefs

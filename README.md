@@ -1,6 +1,6 @@
 # media-mcp
 
-MCP server for the media stack: Sonarr, Radarr, Lidarr, Prowlarr, and SABnzbd.
+MCP server for the media stack: Sonarr, Radarr, Lidarr, Prowlarr, SABnzbd, and Jellyfin.
 
 The server is intentionally env-driven so API keys stay out of git.
 
@@ -165,7 +165,13 @@ This field is additive. Clients can ignore it and keep reading the existing
 - `media_calendar` - show Sonarr/Radarr/Lidarr upcoming releases.
 - `media_search` - search indexers through Prowlarr.
 - `media_wanted_missing` - list missing wanted items for Sonarr/Radarr/Lidarr.
+- `jellyfin_system_info` - show Jellyfin server version and basic system information.
+- `jellyfin_library_counts` - show Jellyfin media item counts.
+- `jellyfin_active_sessions` - show active Jellyfin sessions and playback summary.
+- `jellyfin_recent_activity` - show bounded Jellyfin activity log entries.
+- `jellyfin_scheduled_tasks` - show Jellyfin scheduled task state and last run summaries.
 
 ## Notes
 
 SABnzbd has a different API shape from the Arr apps, so its queue/history tools normalize the output separately.
+Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
