@@ -69,6 +69,7 @@ const requestFollowInput = {
   expectedEpisodeCount: z.number().int().positive().optional(),
   monitorMode: z.string().optional(),
   polls: z.number().int().min(0).default(0),
+  pageSize: z.number().int().min(1).max(200).default(100),
 };
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;

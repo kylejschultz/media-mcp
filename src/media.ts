@@ -1826,6 +1826,7 @@ type RequestFollowInput = {
   expectedEpisodeCount?: number;
   monitorMode?: string;
   polls?: number;
+  pageSize?: number;
 };
 
 type SeriesRequestDefaults = {
@@ -2379,11 +2380,12 @@ export async function requestFollowStatus(input: RequestFollowInput) {
   const serviceLabel = service === "sonarr" ? "Sonarr" : "Radarr";
   const noun = service === "sonarr" ? "Series" : "Movie";
   const displayTitle = title || (service === "sonarr" ? `TVDB ${track.tvdbId}` : `TMDB ${track.tmdbId}`);
+  const pageSize = Math.min(Math.max(Number(input.pageSize ?? 100) || 100, 1), 200);
   const [sabQueue, arrQueue, arrHistory, sabHistory]: AnyRecord[] = await Promise.all([
-    downloadQueue("sabnzbd", 20).catch((error) => ({ error })),
-    downloadQueue(service, 20).catch((error) => ({ error })),
-    recentActivity(service, 20).catch((error) => ({ error })),
-    recentActivity("sabnzbd", 20).catch((error) => ({ error })),
+    downloadQueue("sabnzbd", pageSize).catch((error) => ({ error })),
+    downloadQueue(service, pageSize).catch((error) => ({ error })),
+    recentActivity(service, pageSize).catch((error) => ({ error })),
+    recentActivity("sabnzbd", pageSize).catch((error) => ({ error })),
   ]);
 
   const sabQueueItems = followItems(sabQueue, "sabnzbd", track);
