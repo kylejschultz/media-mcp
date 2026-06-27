@@ -1,6 +1,6 @@
 {
   "name": "media-mcp",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "description": "MCP server for Kyle's media stack.",
   "type": "module",
   "bin": {
@@ -14,6 +14,7 @@
     "start": "node dist/index.js",
     "start:http": "MEDIA_MCP_TRANSPORT=http node dist/index.js",
     "smoke": "tsx scripts/smoke.ts",
+    "test": "node --import tsx --test test/*.test.ts",
     "smoke:http": "MEDIA_MCP_SMOKE_URL=${MEDIA_MCP_SMOKE_URL:-http://localhost:3000/mcp} tsx scripts/smoke.ts"
   },
   "dependencies": {

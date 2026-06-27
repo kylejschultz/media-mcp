@@ -148,6 +148,72 @@ renderers:
 This field is additive. Clients can ignore it and keep reading the existing
 `summary`, `services`, and raw data fields.
 
+## Panel Interaction Contract
+
+The Discord panel router owns component IDs, loading transitions, and message
+edits. This MCP server owns the tool results, normalized `view` payloads, and
+optional ready-to-render component specs. Keep the boundary stable:
+
+- Panel actions should call one MCP tool and render from `view` when present.
+- `summary`, `checkedAt`, `warnings`, and `errors` are the common fallback
+  fields for all panel responses.
+- `view.cards[]` group the visible content; `metrics[]`, `items[]`, `media`,
+  and `actions[]` are renderer hints, not raw API contracts.
+- `components` is an optional Discord-specific override for flows that need
+  exact controls, such as movie search and request preview.
+- Write actions must stay behind the existing safety gate and should be reached
+  through a preview or confirmation state.
+
+### Current Panel Action Map
+
+- Status / overview: call `media_stack_overview`; render the main stack card
+  view with service, health, queue, missing, disk, indexer, library, and import
+  issue summaries.
+- Queue: call `download_queue` for stack-wide queue status, or `media_queue`
+  for a single queue-capable app.
+- Issues: call `get_import_issues` and, when the panel wants broader service
+  context, pair it with `service_health`.
+- Missing: call `get_missing_summary` for the stack summary, or
+  `media_wanted_missing` for a single Sonarr/Radarr/Lidarr list.
+- History: call `recent_activity` for the stack summary, or `media_history` for
+  a single configured app.
+- Indexers: call `indexer_status`.
+- Search indexers: call `media_search`.
+- Search movies: call `search_movie`; use `components` when present for the
+  result dropdown, otherwise render the returned `requestDraft`/`view`.
+  `requestDraft.formFields` contains generic request option descriptors such as
+  root folder, quality profile, monitor state, and search-now.
+- Search series: call `search_series`; use the same `requestDraft.formFields`
+  contract as movies. Series adds monitor mode and season-folder controls.
+- Preview movie request: call `preview_movie_request`; render the returned
+  preview state and request option controls. Disable submit when warnings or
+  the write gate require it.
+- Preview series request: call `preview_series_request`; render the returned
+  preview state and request option controls. When monitor mode maps to a known
+  aired season count, preserve `expectedEpisodeCount` for follow-up status.
+- Request movie: call `request_movie` only from a confirmed preview action and
+  only when `ALLOW_REQUESTS=true`.
+- Request series: call `request_series` only from a confirmed preview action and
+  only when `ALLOW_REQUESTS=true`.
+- Follow request status: poll `media_queue` and `media_history` for the target
+  service, plus SABnzbd when needed. Sonarr follow views should aggregate
+  individual episode queue/import events and display counts such as `1/2
+  imported` when the expected episode count is known.
+
+### Standard Panel States
+
+Renderers should normalize every action into one of these states:
+
+- `loading`: panel has accepted the interaction and is waiting on the MCP tool.
+- `success`: tool returned usable content.
+- `empty`: tool succeeded but has no actionable rows or results.
+- `partial_failure`: tool returned usable content plus warnings.
+- `error`: tool failed or returned no renderable content.
+- `confirm`: user must confirm before a write action runs.
+
+`media-mcp.view.v1` includes an optional `state` field for these states. It is
+additive; existing clients can ignore it until the panel opts in.
+
 ## Tools
 
 - `media_stack_overview` - compact dashboard across status, health, queues, missing media, disk space, indexers, library counts, and import issues.
@@ -172,6 +238,10 @@ This field is additive. Clients can ignore it and keep reading the existing
 - `search_movie` - search Radarr movie candidates and return selectable request draft options.
 - `preview_movie_request` - validate a Radarr movie request without writing.
 - `request_movie` - add an exact selected movie to Radarr when `ALLOW_REQUESTS=true`.
+- `sonarr_request_options` - list Sonarr quality profiles, root folders, tags, monitor modes, and form-friendly request defaults.
+- `search_series` - search Sonarr series candidates and return selectable request draft options.
+- `preview_series_request` - validate a Sonarr series request without writing.
+- `request_series` - add an exact selected series to Sonarr when `ALLOW_REQUESTS=true`.
 - `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
 - `beets_flask_status` - show read-only beets-flask queue, worker, inbox, and library status.
 - `slskd_status` - show read-only slskd Soulseek connection, transfer, and share status.

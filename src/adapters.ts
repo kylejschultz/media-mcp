@@ -34,6 +34,18 @@ export async function radarrAddMovie(app: AppConfig, body: unknown) {
   return arrPost<AnyRecord>(app, "movie", body);
 }
 
+export async function sonarrSeries(app: AppConfig) {
+  return arrGet<AnyRecord[]>(app, "series");
+}
+
+export async function sonarrSeriesLookup(app: AppConfig, term: string) {
+  return arrGet<AnyRecord[]>(app, "series/lookup", { term });
+}
+
+export async function sonarrAddSeries(app: AppConfig, body: unknown) {
+  return arrPost<AnyRecord>(app, "series", body);
+}
+
 export async function sabVersion(app: AppConfig) {
   return sabGet<{ version?: string }>(app, "version");
 }

@@ -20,12 +20,16 @@ import {
   missingSummary,
   prowlarrSearch,
   previewMovieRequest,
+  previewSeriesRequest,
   radarrRequestOptions,
   recentActivity,
   requestMovie,
+  requestSeries,
   searchMovie,
+  searchSeries,
   serviceHealth,
   serviceStatus,
+  sonarrRequestOptions,
   slskdStatus,
   systemStatus,
   wantedMissingNormalized,
@@ -43,6 +47,15 @@ const movieRequestInput = {
   qualityProfileId: z.number().int().positive(),
   rootFolderPath: z.string().min(1),
   monitored: z.boolean().default(true),
+  searchNow: z.boolean().default(true),
+  tagIds: z.array(z.number().int().positive()).default([]),
+};
+const seriesRequestInput = {
+  tvdbId: z.number().int().positive(),
+  qualityProfileId: z.number().int().positive(),
+  rootFolderPath: z.string().min(1),
+  monitorMode: z.enum(["all", "future", "missing", "existing", "firstSeason", "latestSeason", "none"]).default("all"),
+  seasonFolder: z.boolean().default(true),
   searchNow: z.boolean().default(true),
   tagIds: z.array(z.number().int().positive()).default([]),
 };
@@ -336,6 +349,48 @@ export function createMediaMcpServer() {
       inputSchema: movieRequestInput,
     },
     tool((args) => requestMovie(args)),
+  );
+
+  server.registerTool(
+    "sonarr_request_options",
+    {
+      title: "Sonarr Request Options",
+      description: "Return Sonarr quality profiles, root folders, tags, and a neutral series request draft payload.",
+    },
+    tool(() => sonarrRequestOptions()),
+  );
+
+  server.registerTool(
+    "search_series",
+    {
+      title: "Search Series",
+      description: "Search Sonarr series candidates and return selectable options plus a request draft payload.",
+      inputSchema: {
+        query: z.string().min(1),
+        limit: z.number().int().min(1).max(25).default(10),
+      },
+    },
+    tool(({ query, limit }) => searchSeries(query, limit)),
+  );
+
+  server.registerTool(
+    "preview_series_request",
+    {
+      title: "Preview Series Request",
+      description: "Validate a Sonarr series request and return a form-friendly preview without writing.",
+      inputSchema: seriesRequestInput,
+    },
+    tool((args) => previewSeriesRequest(args)),
+  );
+
+  server.registerTool(
+    "request_series",
+    {
+      title: "Request Series",
+      description: "Add an exact selected series to Sonarr. Requires ALLOW_REQUESTS=true.",
+      inputSchema: seriesRequestInput,
+    },
+    tool((args) => requestSeries(args)),
   );
 
   server.registerTool(

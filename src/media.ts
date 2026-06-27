@@ -15,6 +15,9 @@ import {
   radarrMovieLookup,
   radarrMovies,
   sabVersion,
+  sonarrAddSeries,
+  sonarrSeries,
+  sonarrSeriesLookup,
   slskdDownloads,
   slskdServer,
   slskdShares,
@@ -26,10 +29,26 @@ import { toSummary, withStatus } from "./results.js";
 import { requireRequestToolsEnabled, safetyStatus } from "./safety.js";
 import { expectedServiceIssue, getStackFlow, getStackModel, type StackFlowName } from "./stack-model.js";
 import { diskApps, libraryApps, queueApps, type AnyRecord, type LibraryAppName, type QueueAppName } from "./types.js";
-import { componentView, countTone, healthTone, serviceLabel, type DiscordComponentSpec } from "./views.js";
+import {
+  componentView,
+  countTone,
+  healthTone,
+  panelState,
+  serviceLabel,
+  withViewState,
+  type DiscordComponentField,
+  type DiscordComponentSpec,
+} from "./views.js";
 
 function configuredTargets(appName?: AppName) {
   return appName ? [getApp(appName)] : apps.filter((app) => app.url && (!app.keyEnv || app.apiKey));
+}
+
+function futureDateLabel(value?: unknown) {
+  if (typeof value !== "string" || value.trim().length === 0) return undefined;
+  const timestamp = Date.parse(value);
+  if (!Number.isFinite(timestamp) || timestamp <= Date.now()) return undefined;
+  return value.slice(0, 10);
 }
 
 function normalizeHealthIssues(app: AppConfig, issues: AnyRecord[]) {
@@ -184,10 +203,14 @@ export async function serviceStatus(appName?: AppName) {
 
   const missing = configuredApps().filter((app) => !app.configured);
   const okCount = services.filter((service) => service.reachable && service.authenticated).length;
+  const warnings = [
+    ...services.flatMap((service) => service.warnings?.map((warning: string) => `${service.service}: ${warning}`) ?? []),
+    ...missing.map((app) => `${app.name}: missing config`),
+  ];
   const summary = `${okCount}/${services.length} configured services are reachable. ${missing.length} services have missing env config.`;
   return toSummary({
     summary,
-    view: componentView("Service Status", summary, [
+    view: withViewState(componentView("Service Status", summary, [
       {
         id: "reachability",
         title: "Reachability",
@@ -203,9 +226,10 @@ export async function serviceStatus(appName?: AppName) {
           tone: service.reachable && service.authenticated && service.warnings.length === 0 ? "ok" : "warning",
         })),
       },
-    ]),
+    ]), panelState({ warnings })),
     services,
     missing,
+    warnings,
   });
 }
 
@@ -293,9 +317,14 @@ export async function serviceHealth(appName?: AppName) {
         ? "No health issues reported by configured services."
         : `No unexpected health issues reported; ${expectedCount} expected stack-design warning noted.`
       : `${issueCount} unexpected health issues reported; ${expectedCount} expected stack-design warnings noted.`;
+  const warnings = services.flatMap((service) =>
+    service.issues
+      .filter((issue: AnyRecord) => !issue.expected)
+      .map((issue: AnyRecord) => `${service.service}: ${issue.message}`),
+  );
   return toSummary({
     summary,
-    view: componentView("Service Health", summary, [
+    view: withViewState(componentView("Service Health", summary, [
       {
         id: "health",
         title: "Health",
@@ -311,8 +340,9 @@ export async function serviceHealth(appName?: AppName) {
           tone: service.ok ? "ok" : service.health === "error" ? "error" : "warning",
         })),
       },
-    ]),
+    ]), panelState({ warnings })),
     services,
+    warnings,
   });
 }
 
@@ -355,10 +385,11 @@ export async function diskSpace() {
     service.paths.filter((path) => typeof path.usedPercent === "number" && path.usedPercent >= 90).map((path) => `${service.service}:${path.path}`),
   );
   const endpointWarnings = services.flatMap((service) => service.warnings.map((warning) => `${service.service}: ${warning}`));
+  const warnings = [...low, ...endpointWarnings];
   const summary = low.length === 0 ? "No media service-visible disks are above 90% used." : `${low.length} media service-visible paths are above 90% used.`;
   return toSummary({
     summary,
-    view: componentView("Disk Space", summary, [
+    view: withViewState(componentView("Disk Space", summary, [
       {
         id: "disks",
         title: "Service-Visible Paths",
@@ -373,10 +404,10 @@ export async function diskSpace() {
           })),
         ),
       },
-    ]),
+    ]), panelState({ empty: services.every((service) => service.paths.length === 0), emptyLabel: "No disk paths reported", warnings })),
     services,
     skipped,
-    warnings: [...low, ...endpointWarnings],
+    warnings,
   });
 }
 
@@ -434,24 +465,37 @@ export async function downloadQueue(appName?: QueueAppName, pageSize = 50) {
     }),
   );
   const total = services.reduce((sum, service) => sum + Number(service.total ?? 0), 0);
+  const warnings = services.flatMap((service) => service.warnings?.map((warning: string) => `${service.service}: ${warning}`) ?? []);
   const summary = total === 0 ? "No active queue items reported." : `${total} queue items reported across ${services.length} services.`;
+  const queueItems = services.flatMap((service) =>
+    service.items.map((item: AnyRecord) => ({
+      label: serviceLabel(service.service),
+      value: item.progress !== undefined ? `${item.progress}%` : item.status,
+      detail: item.title,
+      tone: "info" as const,
+    })),
+  );
+  const queueWarnings = services
+    .filter((service) => service.warnings?.length)
+    .map((service) => ({
+      label: serviceLabel(service.service),
+      value: "warning",
+      detail: service.warnings?.[0],
+      tone: "warning" as const,
+    }));
   return toSummary({
     summary,
-    view: componentView("Download Queue", summary, [
+    view: withViewState(componentView("Download Queue", summary, [
       {
         id: "queue",
         title: "Queue",
         tone: countTone(total),
-        metrics: [{ label: "Items", value: total, tone: countTone(total) }],
-        items: services.map((service) => ({
-          label: serviceLabel(service.service),
-          value: service.total,
-          detail: service.items[0]?.title,
-          tone: service.warnings?.length ? "warning" : service.total > 0 ? "info" : "ok",
-        })),
+        metrics: total > 0 ? [{ label: "Items", value: total, tone: countTone(total) }] : [],
+        items: [...queueItems, ...queueWarnings],
       },
-    ]),
+    ]), panelState({ empty: total === 0, emptyLabel: "No active queue items", warnings })),
     services,
+    warnings,
   });
 }
 
@@ -534,7 +578,7 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
   const summary = `${total} recent activity items returned across ${services.length} services.`;
   return toSummary({
     summary,
-    view: componentView("Recent Activity", summary, [
+    view: withViewState(componentView("Recent Activity", summary, [
       {
         id: "activity",
         title: "Recent Activity",
@@ -550,7 +594,7 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
           tone: service.warnings?.length ? "warning" : service.items.length > 0 ? "info" : "ok",
         })),
       },
-    ]),
+    ]), panelState({ empty: total === 0, emptyLabel: "No recent activity", warnings })),
     services,
     warnings,
   });
@@ -577,9 +621,10 @@ export async function wantedMissingNormalized(appName: LibraryAppName, pageSize 
     monitored: record.monitored,
   }));
   const summary = result.ok ? `${total} missing wanted items reported for ${app.label}.` : `${app.label} missing wanted lookup failed: ${result.error}`;
+  const warnings = result.ok ? [] : [result.error];
   return toSummary({
     summary,
-    view: componentView("Wanted Missing", summary, [
+    view: withViewState(componentView("Wanted Missing", summary, [
       {
         id: "missing",
         title: app.label,
@@ -587,15 +632,15 @@ export async function wantedMissingNormalized(appName: LibraryAppName, pageSize 
         metrics: [{ label: "Missing", value: total, tone: total > 0 ? "info" : "ok" }],
         items: items.slice(0, 10).map((item) => ({
           label: item.title,
-          value: item.releaseDate ?? item.airDateUtc ?? "unknown date",
+          value: futureDateLabel(item.releaseDate ?? item.airDateUtc),
           tone: "info",
         })),
       },
-    ]),
+    ]), panelState({ empty: result.ok && total === 0, emptyLabel: `No missing wanted items for ${app.label}`, warnings })),
     service: app.name,
     total,
     items,
-    warnings: result.ok ? [] : [result.error],
+    warnings,
   });
 }
 
@@ -620,24 +665,48 @@ export async function missingSummary(pageSize = 10) {
     }),
   );
   const total = services.reduce((sum, service) => sum + Number(service.total ?? 0), 0);
+  const warnings = services.flatMap((service) => service.warnings?.map((warning: string) => `${service.service}: ${warning}`) ?? []);
   const summary = `${total} missing wanted items reported across Sonarr/Radarr/Lidarr.`;
+  const missingCards = services
+    .filter((service) => service.sample.length > 0)
+    .map((service) => ({
+      id: `missing-${service.service}`,
+      title: serviceLabel(service.service),
+      tone: "info" as const,
+      metrics: [{ label: "Missing", value: service.total, tone: countTone(Number(service.total ?? 0)) }],
+      items: service.sample.map((item) => ({
+        label: item.title,
+        value: futureDateLabel(item.releaseDate ?? item.airDateUtc),
+        tone: "info" as const,
+      })),
+    }));
+  const missingWarnings = services
+    .filter((service) => service.warnings?.length)
+    .map((service) => ({
+      id: `missing-warning-${service.service}`,
+      title: serviceLabel(service.service),
+      tone: "warning" as const,
+      items: [{
+        label: "Warning",
+        detail: service.warnings?.[0],
+        tone: "warning" as const,
+      }],
+    }));
   return toSummary({
     summary,
-    view: componentView("Missing Media", summary, [
+    view: withViewState(componentView("Missing Media", summary, [
       {
         id: "missing",
         title: "Wanted Missing",
         tone: countTone(total),
         metrics: [{ label: "Missing", value: total, tone: countTone(total) }],
-        items: services.map((service) => ({
-          label: serviceLabel(service.service),
-          value: service.total,
-          detail: service.sample[0]?.title ?? service.warnings?.[0],
-          tone: service.warnings?.length ? "warning" : service.total > 0 ? "info" : "ok",
-        })),
+        items: [],
       },
-    ]),
+      ...missingCards,
+      ...missingWarnings,
+    ]), panelState({ empty: total === 0, emptyLabel: "No missing wanted media", warnings })),
     services,
+    warnings,
   });
 }
 
@@ -942,7 +1011,7 @@ export async function libraryCounts() {
   const summary = `Library counts loaded for ${loaded}/${expected} categories.`;
   return toSummary({
     summary,
-    view: componentView("Library Counts", summary, [
+    view: withViewState(componentView("Library Counts", summary, [
       {
         id: "libraries",
         title: "Libraries",
@@ -960,7 +1029,7 @@ export async function libraryCounts() {
             : []),
         ],
       },
-    ]),
+    ]), panelState({ warnings })),
     counts,
     warnings,
   });
@@ -983,6 +1052,7 @@ export async function importIssues(pageSize = 50) {
 
   const activity = await recentActivity(undefined, pageSize);
   const activityServices = (activity.services as Array<{ service: string; items: AnyRecord[] }>) ?? [];
+  const warnings = [...queueSummary.warnings, ...activity.warnings];
   const historyFailures = activityServices.flatMap((service) =>
     service.items.filter((item) => item.successful === false).map((item) => ({ service: service.service, item, serviceItems: service.items })),
   );
@@ -1011,7 +1081,7 @@ export async function importIssues(pageSize = 50) {
   const summary = `${queueIssues.length} queue/import warnings and ${failedHistory.length} unresolved failed recent history items found; ${resolvedCount} later completed.`;
   return toSummary({
     summary,
-    view: componentView("Import Issues", summary, [
+    view: withViewState(componentView("Import Issues", summary, [
       {
         id: "issues",
         title: "Issues",
@@ -1031,10 +1101,15 @@ export async function importIssues(pageSize = 50) {
           };
         }),
       },
-    ]),
+    ]), panelState({
+      empty: queueIssues.length === 0 && failedHistory.length === 0,
+      emptyLabel: "No active import issues",
+      warnings,
+    })),
     queueIssues,
     failedHistory,
     resolvedFailedHistory,
+    warnings,
   });
 }
 
@@ -1051,7 +1126,7 @@ export async function indexerStatus() {
   const summary = `${indexerList.length} indexers configured; ${disabled.length} currently have failure/disabled status.`;
   return toSummary({
     summary,
-    view: componentView("Indexer Status", summary, [
+    view: withViewState(componentView("Indexer Status", summary, [
       {
         id: "indexers",
         title: "Prowlarr Indexers",
@@ -1067,7 +1142,11 @@ export async function indexerStatus() {
           tone: indexer.enable ? "ok" : "warning",
         })),
       },
-    ]),
+    ]), panelState({
+      empty: indexerList.length === 0,
+      emptyLabel: "No indexers configured",
+      warnings: [...warnings, ...disabled.map((indexer) => `${indexer.indexerId ?? "indexer"}: disabled or failed`)],
+    })),
     ok: health.ok && indexers.ok && indexerStatuses.ok,
     healthIssues: health.ok ? health.data : [{ message: health.error }],
     indexers: indexerList.map((indexer) => ({
@@ -1111,10 +1190,16 @@ export async function mediaStackOverview() {
   const missingTotal = ((missing.services as AnyRecord[]) ?? []).reduce((sum, service) => sum + Number(service.total ?? 0), 0);
   const diskWarnings = Array.isArray(disks.warnings) ? disks.warnings.length : 0;
   const importIssueCount = Number(issueSummary.queueIssues?.length ?? 0) + Number(issueSummary.failedHistory?.length ?? 0);
+  const warnings = [
+    ...(reachable < services.length ? [`${services.length - reachable} services are not reachable`] : []),
+    ...(healthIssueCount > 0 ? [`${healthIssueCount} unexpected health issues`] : []),
+    ...(diskWarnings > 0 ? [`${diskWarnings} disk warnings`] : []),
+    ...(importIssueCount > 0 ? [`${importIssueCount} import issues`] : []),
+  ];
   const summary = `${reachable}/${services.length} services reachable. ${queues.summary} ${missing.summary}`;
   return toSummary({
     summary,
-    view: componentView("Media Stack", summary, [
+    view: withViewState(componentView("Media Stack", summary, [
       {
         id: "services",
         title: "Services",
@@ -1169,7 +1254,7 @@ export async function mediaStackOverview() {
           { label: "Expectations", value: getStackModel().expectations.serviceIssues.length },
         ],
       },
-    ]),
+    ]), panelState({ warnings })),
     status,
     health,
     queues,
@@ -1179,6 +1264,7 @@ export async function mediaStackOverview() {
     libraries,
     issues,
     safety,
+    warnings,
   });
 }
 
@@ -1238,6 +1324,14 @@ type MovieRequestInput = {
   tagIds?: number[];
 };
 
+type MovieRequestDefaults = {
+  qualityProfileId?: number;
+  rootFolderPath?: string;
+  monitored: boolean;
+  searchNow: boolean;
+  tagIds: number[];
+};
+
 function movieCandidate(record: AnyRecord) {
   return {
     tmdbId: record.tmdbId,
@@ -1284,6 +1378,66 @@ function tagOptions(records: AnyRecord[]) {
   }));
 }
 
+function defaultMovieRequestValues(args: {
+  qualityProfiles: AnyRecord[];
+  rootFolders: AnyRecord[];
+  request?: MovieRequestInput;
+}): MovieRequestDefaults {
+  return {
+    qualityProfileId: args.request?.qualityProfileId ?? args.qualityProfiles[0]?.id,
+    rootFolderPath: args.request?.rootFolderPath ?? args.rootFolders[0]?.path,
+    monitored: args.request?.monitored ?? true,
+    searchNow: args.request?.searchNow ?? true,
+    tagIds: args.request?.tagIds ?? [],
+  };
+}
+
+function movieRequestFormFields(args: {
+  qualityProfiles: AnyRecord[];
+  rootFolders: AnyRecord[];
+  defaults: MovieRequestDefaults;
+}): DiscordComponentField[] {
+  return [
+    {
+      id: "qualityProfileId",
+      label: "Quality Profile",
+      type: "select",
+      required: true,
+      value: args.defaults.qualityProfileId,
+      placeholder: "Choose quality",
+      options: qualityProfileOptions(args.qualityProfiles).map((profile) => ({
+        label: truncateComponentText(profile.label, 100),
+        value: String(profile.id),
+      })),
+    },
+    {
+      id: "rootFolderPath",
+      label: "Root Folder",
+      type: "select",
+      required: true,
+      value: args.defaults.rootFolderPath,
+      placeholder: "Choose root folder",
+      options: rootFolderOptions(args.rootFolders).map((folder) => ({
+        label: truncateComponentText(folder.label, 100),
+        value: folder.path,
+        description: folder.freeSpace !== undefined ? `${bytes(Number(folder.freeSpace))} free` : undefined,
+      })),
+    },
+    {
+      id: "monitored",
+      label: "Monitored",
+      type: "checkbox",
+      value: args.defaults.monitored,
+    },
+    {
+      id: "searchNow",
+      label: "Search Now",
+      type: "checkbox",
+      value: args.defaults.searchNow,
+    },
+  ];
+}
+
 function movieRequestDraft(args: {
   candidates?: AnyRecord[];
   selected?: AnyRecord;
@@ -1292,6 +1446,7 @@ function movieRequestDraft(args: {
   tags: AnyRecord[];
   request?: MovieRequestInput;
 }) {
+  const defaults = defaultMovieRequestValues(args);
   return {
     schema: "media-mcp.requestDraft.v1",
     kind: "movie",
@@ -1301,11 +1456,12 @@ function movieRequestDraft(args: {
     qualityProfileOptions: qualityProfileOptions(args.qualityProfiles),
     rootFolderOptions: rootFolderOptions(args.rootFolders),
     tagOptions: tagOptions(args.tags),
-    defaults: {
-      monitored: true,
-      searchNow: true,
-      tagIds: [],
-    },
+    defaults,
+    formFields: movieRequestFormFields({
+      qualityProfiles: args.qualityProfiles,
+      rootFolders: args.rootFolders,
+      defaults,
+    }),
     request: args.request,
     writeGate: {
       env: "ALLOW_REQUESTS",
@@ -1375,6 +1531,7 @@ function discordMoviePreviewComponents(args: {
   request: MovieRequestInput;
   qualityProfile: AnyRecord;
   rootFolder: AnyRecord;
+  formFields: DiscordComponentField[];
   disabled: boolean;
 }): DiscordComponentSpec {
   const poster = moviePoster(args.selected);
@@ -1386,9 +1543,13 @@ function discordMoviePreviewComponents(args: {
         texts: [
           `**${movieLabel(args.selected)}**`,
           args.summary,
-          `Quality: ${args.qualityProfile.name}\nRoot: ${args.rootFolder.path}\nSearch now: ${args.request.searchNow ? "yes" : "no"}`,
+          `Quality: ${args.qualityProfile.name}\nRoot: ${args.rootFolder.path}\nMonitored: ${args.request.monitored ? "yes" : "no"}\nSearch now: ${args.request.searchNow ? "yes" : "no"}`,
         ],
         accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
+      },
+      {
+        type: "form",
+        fields: args.formFields,
       },
       {
         type: "actions",
@@ -1450,7 +1611,7 @@ export async function searchMovie(query: string, limit = 10) {
   const defaultRootFolder = rootFolders[0];
   return toSummary({
     summary,
-    view: componentView("Movie Search", summary, [
+    view: withViewState(componentView("Movie Search", summary, [
       {
         id: "movie-results",
         title: "Results",
@@ -1483,7 +1644,7 @@ export async function searchMovie(query: string, limit = 10) {
             ]
           : undefined,
       },
-    ]),
+    ]), panelState({ empty: candidates.length === 0, emptyLabel: "No movie candidates found" })),
     components: discordMovieSearchComponents(query, summary, candidates),
     candidates: candidates.map(movieCandidate),
     requestDraft: movieRequestDraft({ candidates, qualityProfiles, rootFolders, tags }),
@@ -1539,13 +1700,24 @@ function radarrAddPayload(selected: AnyRecord, request: MovieRequestInput) {
 
 export async function previewMovieRequest(input: MovieRequestInput) {
   const context = await validateMovieRequest(input);
+  const requestToolsEnabled = safetyStatus().requestToolsEnabled;
   const warnings = context.existing ? [`${context.selected.title} already exists in Radarr`] : [];
+  const defaults = defaultMovieRequestValues({
+    qualityProfiles: context.qualityProfiles,
+    rootFolders: context.rootFolders,
+    request: context.request,
+  });
+  const formFields = movieRequestFormFields({
+    qualityProfiles: context.qualityProfiles,
+    rootFolders: context.rootFolders,
+    defaults,
+  });
   const summary = warnings.length > 0
     ? `Preview ready for ${context.selected.title}; ${warnings[0]}.`
     : `Preview ready to request ${context.selected.title} (${context.selected.year}) in Radarr.`;
   return toSummary({
     summary,
-    view: componentView("Movie Request Preview", summary, [
+    view: withViewState(componentView("Movie Request Preview", summary, [
       {
         id: "movie-request",
         title: context.selected.title,
@@ -1564,9 +1736,9 @@ export async function previewMovieRequest(input: MovieRequestInput) {
         actions: [
           {
             id: "request-movie",
-            label: safetyStatus().requestToolsEnabled ? "Request movie" : "Requests disabled",
+            label: requestToolsEnabled ? "Request movie" : "Requests disabled",
             kind: "submit",
-            disabled: warnings.length > 0 || !safetyStatus().requestToolsEnabled,
+            disabled: warnings.length > 0 || !requestToolsEnabled,
             payload: {
               tool: "request_movie",
               ...context.request,
@@ -1574,7 +1746,14 @@ export async function previewMovieRequest(input: MovieRequestInput) {
           },
         ],
       },
-    ]),
+    ]), panelState({
+      warnings: warnings.length > 0 || !requestToolsEnabled
+        ? [...warnings, ...(!requestToolsEnabled ? ["Request tools are disabled"] : [])]
+        : [],
+      confirmActionId: "request-movie",
+      confirmLabel: "Confirm movie request",
+      confirmDetail: `Request ${context.selected.title} in Radarr`,
+    })),
     requestDraft: movieRequestDraft({
       selected: context.selected,
       qualityProfiles: context.qualityProfiles,
@@ -1588,7 +1767,8 @@ export async function previewMovieRequest(input: MovieRequestInput) {
       request: context.request,
       qualityProfile: context.qualityProfile,
       rootFolder: context.rootFolder,
-      disabled: warnings.length > 0 || !safetyStatus().requestToolsEnabled,
+      formFields,
+      disabled: warnings.length > 0 || !requestToolsEnabled,
     }),
     payloadPreview: radarrAddPayload(context.selected, context.request),
     warnings,
@@ -1604,7 +1784,7 @@ export async function requestMovie(input: MovieRequestInput) {
   const summary = `Requested ${result.title ?? context.selected.title} in Radarr.`;
   return toSummary({
     summary,
-    view: componentView("Movie Requested", summary, [
+    view: withViewState(componentView("Movie Requested", summary, [
       {
         id: "movie-requested",
         title: "Radarr",
@@ -1614,7 +1794,7 @@ export async function requestMovie(input: MovieRequestInput) {
           { label: "Search", value: context.request.searchNow ? "started" : "not started" },
         ],
       },
-    ]),
+    ]), panelState({ successDetail: summary })),
     movie: {
       id: result.id,
       tmdbId: result.tmdbId,
@@ -1622,6 +1802,549 @@ export async function requestMovie(input: MovieRequestInput) {
       year: result.year,
       monitored: result.monitored,
     },
+  });
+}
+
+type SeriesRequestInput = {
+  tvdbId: number;
+  qualityProfileId: number;
+  rootFolderPath: string;
+  monitorMode?: string;
+  seasonFolder?: boolean;
+  searchNow?: boolean;
+  tagIds?: number[];
+};
+
+type SeriesRequestDefaults = {
+  qualityProfileId?: number;
+  rootFolderPath?: string;
+  monitorMode: string;
+  seasonFolder: boolean;
+  searchNow: boolean;
+  tagIds: number[];
+};
+
+const sonarrMonitorOptions = [
+  { id: "all", label: "All Episodes" },
+  { id: "future", label: "Future Episodes" },
+  { id: "missing", label: "Missing Episodes" },
+  { id: "existing", label: "Existing Episodes" },
+  { id: "firstSeason", label: "First Season" },
+  { id: "latestSeason", label: "Latest Season" },
+  { id: "none", label: "None" },
+];
+
+function seriesCandidate(record: AnyRecord) {
+  return {
+    tvdbId: record.tvdbId,
+    title: record.title,
+    year: record.year,
+    titleSlug: record.titleSlug,
+    overview: record.overview,
+    status: record.status,
+    network: record.network,
+    genres: record.genres,
+    images: record.images,
+    remotePoster: record.remotePoster,
+    seasons: Array.isArray(record.seasons) ? record.seasons.map((season: AnyRecord) => ({
+      seasonNumber: season.seasonNumber,
+      monitored: season.monitored,
+      episodeCount: season.statistics?.episodeCount,
+      totalEpisodeCount: season.statistics?.totalEpisodeCount,
+      episodeFileCount: season.statistics?.episodeFileCount,
+    })) : undefined,
+    alreadyExists: Boolean(record.isExisting),
+  };
+}
+
+function seriesPoster(record: AnyRecord) {
+  return typeof record.remotePoster === "string" && record.remotePoster.length > 0
+    ? { type: "image" as const, url: record.remotePoster, alt: `${record.title ?? "Series"} poster` }
+    : undefined;
+}
+
+function defaultSeriesRequestValues(args: {
+  qualityProfiles: AnyRecord[];
+  rootFolders: AnyRecord[];
+  request?: SeriesRequestInput;
+}): SeriesRequestDefaults {
+  return {
+    qualityProfileId: args.request?.qualityProfileId ?? args.qualityProfiles[0]?.id,
+    rootFolderPath: args.request?.rootFolderPath ?? args.rootFolders[0]?.path,
+    monitorMode: args.request?.monitorMode ?? "all",
+    seasonFolder: args.request?.seasonFolder ?? true,
+    searchNow: args.request?.searchNow ?? true,
+    tagIds: args.request?.tagIds ?? [],
+  };
+}
+
+function seriesRequestFormFields(args: {
+  qualityProfiles: AnyRecord[];
+  rootFolders: AnyRecord[];
+  defaults: SeriesRequestDefaults;
+}): DiscordComponentField[] {
+  return [
+    {
+      id: "qualityProfileId",
+      label: "Quality Profile",
+      type: "select",
+      required: true,
+      value: args.defaults.qualityProfileId,
+      placeholder: "Choose quality",
+      options: qualityProfileOptions(args.qualityProfiles).map((profile) => ({
+        label: truncateComponentText(profile.label, 100),
+        value: String(profile.id),
+      })),
+    },
+    {
+      id: "rootFolderPath",
+      label: "Root Folder",
+      type: "select",
+      required: true,
+      value: args.defaults.rootFolderPath,
+      placeholder: "Choose root folder",
+      options: rootFolderOptions(args.rootFolders).map((folder) => ({
+        label: truncateComponentText(folder.label, 100),
+        value: folder.path,
+        description: folder.freeSpace !== undefined ? `${bytes(Number(folder.freeSpace))} free` : undefined,
+      })),
+    },
+    {
+      id: "monitorMode",
+      label: "Monitor",
+      type: "select",
+      required: true,
+      value: args.defaults.monitorMode,
+      placeholder: "Choose monitoring",
+      options: sonarrMonitorOptions.map((option) => ({
+        label: option.label,
+        value: option.id,
+      })),
+    },
+    {
+      id: "seasonFolder",
+      label: "Season Folders",
+      type: "checkbox",
+      value: args.defaults.seasonFolder,
+    },
+    {
+      id: "searchNow",
+      label: "Search Now",
+      type: "checkbox",
+      value: args.defaults.searchNow,
+    },
+  ];
+}
+
+function seriesRequestDraft(args: {
+  candidates?: AnyRecord[];
+  selected?: AnyRecord;
+  qualityProfiles: AnyRecord[];
+  rootFolders: AnyRecord[];
+  tags: AnyRecord[];
+  request?: SeriesRequestInput;
+}) {
+  const defaults = defaultSeriesRequestValues(args);
+  return {
+    schema: "media-mcp.requestDraft.v1",
+    kind: "series",
+    service: "sonarr",
+    candidateOptions: args.candidates?.map(seriesCandidate) ?? [],
+    selectedCandidate: args.selected ? seriesCandidate(args.selected) : undefined,
+    qualityProfileOptions: qualityProfileOptions(args.qualityProfiles),
+    rootFolderOptions: rootFolderOptions(args.rootFolders),
+    tagOptions: tagOptions(args.tags),
+    monitorOptions: sonarrMonitorOptions,
+    defaults,
+    formFields: seriesRequestFormFields({
+      qualityProfiles: args.qualityProfiles,
+      rootFolders: args.rootFolders,
+      defaults,
+    }),
+    request: args.request,
+    writeGate: {
+      env: "ALLOW_REQUESTS",
+      enabled: safetyStatus().requestToolsEnabled,
+    },
+  };
+}
+
+function seriesLabel(record: AnyRecord) {
+  return truncateComponentText(`${record.title ?? "Untitled"}${record.year ? ` (${record.year})` : ""}`, 100);
+}
+
+function seriesDescription(record: AnyRecord) {
+  const pieces = [
+    record.isExisting ? "Already in Sonarr" : undefined,
+    record.network,
+    Array.isArray(record.genres) ? record.genres.slice(0, 2).join(", ") : undefined,
+  ].filter(Boolean);
+  return pieces.length > 0 ? truncateComponentText(pieces.join(" | "), 100) : undefined;
+}
+
+function seriesPreviewCommand(record: AnyRecord) {
+  return `Preview Sonarr series TVDB ${record.tvdbId} with default request options`;
+}
+
+function discordSeriesSearchComponents(query: string, summary: string, candidates: AnyRecord[]): DiscordComponentSpec | undefined {
+  if (candidates.length === 0) return;
+  const featured = candidates[0];
+  const poster = seriesPoster(featured);
+  return {
+    container: { accentColor: "#2f81f7" },
+    blocks: [
+      { type: "text", text: `**Series Search**\n${summary}` },
+      {
+        type: "section",
+        text: `Pick the exact match for "${truncateComponentText(query, 80)}".`,
+        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
+      },
+      {
+        type: "actions",
+        select: {
+          type: "string",
+          placeholder: "Choose a series to preview",
+          minValues: 1,
+          maxValues: 1,
+          callbackDataKind: "command",
+          options: candidates.slice(0, 25).map((candidate) => ({
+            label: seriesLabel(candidate),
+            value: seriesPreviewCommand(candidate),
+            description: seriesDescription(candidate),
+          })),
+        },
+      },
+    ],
+  };
+}
+
+function discordSeriesPreviewComponents(args: {
+  summary: string;
+  selected: AnyRecord;
+  request: SeriesRequestInput;
+  qualityProfile: AnyRecord;
+  rootFolder: AnyRecord;
+  formFields: DiscordComponentField[];
+  disabled: boolean;
+}): DiscordComponentSpec {
+  const poster = seriesPoster(args.selected);
+  const monitor = sonarrMonitorOptions.find((option) => option.id === args.request.monitorMode)?.label ?? args.request.monitorMode;
+  return {
+    container: { accentColor: args.disabled ? "#9a6700" : "#1a7f37" },
+    blocks: [
+      {
+        type: "section",
+        texts: [
+          `**${seriesLabel(args.selected)}**`,
+          args.summary,
+          `Quality: ${args.qualityProfile.name}\nRoot: ${args.rootFolder.path}\nMonitor: ${monitor}\nSeason folders: ${args.request.seasonFolder ? "yes" : "no"}\nSearch now: ${args.request.searchNow ? "yes" : "no"}`,
+        ],
+        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
+      },
+      {
+        type: "form",
+        fields: args.formFields,
+      },
+      {
+        type: "actions",
+        buttons: [
+          {
+            label: args.disabled ? "Requests disabled" : "Request series",
+            style: args.disabled ? "secondary" : "success",
+            disabled: args.disabled,
+            callbackData: `Request Sonarr series TVDB ${args.request.tvdbId}`,
+            callbackDataKind: "command",
+          },
+        ],
+      },
+    ],
+  };
+}
+
+export async function sonarrRequestOptions() {
+  const app = getApp("sonarr");
+  const [qualityProfiles, rootFolders, tags] = await Promise.all([
+    arrQualityProfiles(app),
+    arrRootFolders(app),
+    arrTags(app),
+  ]);
+  const summary = `${qualityProfiles.length} Sonarr quality profiles and ${rootFolders.length} root folders available.`;
+  return toSummary({
+    summary,
+    view: componentView("Sonarr Request Options", summary, [
+      {
+        id: "sonarr-options",
+        title: "Options",
+        tone: rootFolders.length > 0 && qualityProfiles.length > 0 ? "ok" : "warning",
+        metrics: [
+          { label: "Quality Profiles", value: qualityProfiles.length },
+          { label: "Root Folders", value: rootFolders.length },
+          { label: "Tags", value: tags.length },
+        ],
+        items: [
+          ...qualityProfileOptions(qualityProfiles).slice(0, 5).map((profile) => ({ label: "Quality", value: profile.label })),
+          ...rootFolderOptions(rootFolders).slice(0, 5).map((folder) => ({ label: "Root", value: folder.path })),
+        ],
+      },
+    ]),
+    requestDraft: seriesRequestDraft({ qualityProfiles, rootFolders, tags }),
+  });
+}
+
+export async function searchSeries(query: string, limit = 10) {
+  const app = getApp("sonarr");
+  const [results, qualityProfiles, rootFolders, tags] = await Promise.all([
+    sonarrSeriesLookup(app, query),
+    arrQualityProfiles(app),
+    arrRootFolders(app),
+    arrTags(app),
+  ]);
+  const candidates = results.slice(0, limit);
+  const summary = `${candidates.length} Sonarr series candidates returned for "${query}".`;
+  const defaultQualityProfile = qualityProfiles[0];
+  const defaultRootFolder = rootFolders[0];
+  return toSummary({
+    summary,
+    view: withViewState(componentView("Series Search", summary, [
+      {
+        id: "series-results",
+        title: "Results",
+        tone: candidates.length > 0 ? "info" : "warning",
+        media: candidates.length === 1 ? seriesPoster(candidates[0]) : undefined,
+        metrics: [{ label: "Candidates", value: candidates.length, tone: candidates.length > 0 ? "info" : "warning" }],
+        items: candidates.map((candidate) => ({
+          label: candidate.title,
+          value: candidate.year ?? "unknown year",
+          detail: candidate.overview,
+          tone: candidate.isExisting ? "ok" : "info",
+          media: seriesPoster(candidate),
+        })),
+        actions: candidates.length === 1 && defaultQualityProfile && defaultRootFolder
+          ? [
+              {
+                id: "preview-series-request",
+                label: "Preview request",
+                kind: "preview",
+                payload: {
+                  tool: "preview_series_request",
+                  tvdbId: candidates[0].tvdbId,
+                  qualityProfileId: defaultQualityProfile.id,
+                  rootFolderPath: defaultRootFolder.path,
+                  monitorMode: "all",
+                  seasonFolder: true,
+                  searchNow: true,
+                  tagIds: [],
+                },
+              },
+            ]
+          : undefined,
+      },
+    ]), panelState({ empty: candidates.length === 0, emptyLabel: "No series candidates found" })),
+    components: discordSeriesSearchComponents(query, summary, candidates),
+    candidates: candidates.map(seriesCandidate),
+    requestDraft: seriesRequestDraft({ candidates, qualityProfiles, rootFolders, tags }),
+  });
+}
+
+async function validateSeriesRequest(input: SeriesRequestInput) {
+  const app = getApp("sonarr");
+  const tagIds = input.tagIds ?? [];
+  const monitorMode = input.monitorMode ?? "all";
+  if (!sonarrMonitorOptions.some((option) => option.id === monitorMode)) {
+    throw new Error(`Sonarr monitor mode is not available: ${monitorMode}`);
+  }
+
+  const [lookup, qualityProfiles, rootFolders, tags, existingSeries] = await Promise.all([
+    sonarrSeriesLookup(app, `tvdb:${input.tvdbId}`),
+    arrQualityProfiles(app),
+    arrRootFolders(app),
+    arrTags(app),
+    sonarrSeries(app),
+  ]);
+  const selected = lookup.find((candidate) => Number(candidate.tvdbId) === input.tvdbId);
+  if (!selected) throw new Error(`Sonarr could not resolve TVDB ID ${input.tvdbId}`);
+
+  const qualityProfile = qualityProfiles.find((profile) => Number(profile.id) === input.qualityProfileId);
+  if (!qualityProfile) throw new Error(`Quality profile ${input.qualityProfileId} is not available in Sonarr`);
+
+  const rootFolder = rootFolders.find((folder) => folder.path === input.rootFolderPath);
+  if (!rootFolder) throw new Error(`Root folder is not available in Sonarr: ${input.rootFolderPath}`);
+
+  const unknownTags = tagIds.filter((tagId) => !tags.some((tag) => Number(tag.id) === tagId));
+  if (unknownTags.length > 0) throw new Error(`Sonarr tag IDs are not available: ${unknownTags.join(", ")}`);
+
+  const existing = existingSeries.find((series) => Number(series.tvdbId) === input.tvdbId);
+  const request: SeriesRequestInput = {
+    tvdbId: input.tvdbId,
+    qualityProfileId: input.qualityProfileId,
+    rootFolderPath: input.rootFolderPath,
+    monitorMode,
+    seasonFolder: input.seasonFolder ?? true,
+    searchNow: input.searchNow ?? true,
+    tagIds,
+  };
+  return { app, selected, qualityProfiles, rootFolders, tags, qualityProfile, rootFolder, existing, request };
+}
+
+function sonarrAddPayload(selected: AnyRecord, request: SeriesRequestInput) {
+  return {
+    ...selected,
+    qualityProfileId: request.qualityProfileId,
+    rootFolderPath: request.rootFolderPath,
+    monitored: request.monitorMode !== "none",
+    seasonFolder: request.seasonFolder ?? true,
+    tags: request.tagIds ?? [],
+    addOptions: {
+      monitor: request.monitorMode ?? "all",
+      searchForMissingEpisodes: request.searchNow ?? true,
+      searchForCutoffUnmetEpisodes: false,
+    },
+  };
+}
+
+function seasonEpisodeCount(season: AnyRecord) {
+  const value = Number(season?.statistics?.episodeCount ?? season?.statistics?.totalEpisodeCount ?? season?.episodeCount);
+  return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function expectedEpisodeCountForMonitor(series: AnyRecord, monitorMode?: string) {
+  const seasons = Array.isArray(series?.seasons)
+    ? series.seasons.filter((season: AnyRecord) => Number(season?.seasonNumber) > 0)
+    : [];
+  if (seasons.length === 0) return undefined;
+
+  if (monitorMode === "firstSeason") {
+    const firstSeason = seasons.reduce<AnyRecord | undefined>((best, season) =>
+      !best || Number(season.seasonNumber) < Number(best.seasonNumber) ? season : best, undefined);
+    return firstSeason ? seasonEpisodeCount(firstSeason) : undefined;
+  }
+
+  if (monitorMode === "latestSeason") {
+    const latestSeason = seasons.reduce<AnyRecord | undefined>((best, season) =>
+      !best || Number(season.seasonNumber) > Number(best.seasonNumber) ? season : best, undefined);
+    return latestSeason ? seasonEpisodeCount(latestSeason) : undefined;
+  }
+
+  if (monitorMode === "all") {
+    const counts = seasons.map(seasonEpisodeCount);
+    return counts.every((count) => count !== undefined)
+      ? counts.reduce((sum, count) => sum + Number(count), 0)
+      : undefined;
+  }
+
+  return undefined;
+}
+
+export async function previewSeriesRequest(input: SeriesRequestInput) {
+  const context = await validateSeriesRequest(input);
+  const requestToolsEnabled = safetyStatus().requestToolsEnabled;
+  const warnings = context.existing ? [`${context.selected.title} already exists in Sonarr`] : [];
+  const defaults = defaultSeriesRequestValues({
+    qualityProfiles: context.qualityProfiles,
+    rootFolders: context.rootFolders,
+    request: context.request,
+  });
+  const formFields = seriesRequestFormFields({
+    qualityProfiles: context.qualityProfiles,
+    rootFolders: context.rootFolders,
+    defaults,
+  });
+  const monitor = sonarrMonitorOptions.find((option) => option.id === context.request.monitorMode)?.label ?? context.request.monitorMode;
+  const summary = warnings.length > 0
+    ? `Preview ready for ${context.selected.title}; ${warnings[0]}.`
+    : `Preview ready to request ${context.selected.title} (${context.selected.year}) in Sonarr.`;
+  return toSummary({
+    summary,
+    view: withViewState(componentView("Series Request Preview", summary, [
+      {
+        id: "series-request",
+        title: context.selected.title,
+        tone: warnings.length > 0 ? "warning" : "info",
+        media: seriesPoster(context.selected),
+        metrics: [
+          { label: "Year", value: context.selected.year ?? "unknown" },
+          { label: "Quality", value: context.qualityProfile.name },
+          { label: "Monitor", value: monitor },
+        ],
+        items: [
+          { label: "Root Folder", value: context.rootFolder.path },
+          { label: "Season Folders", value: context.request.seasonFolder ? "yes" : "no" },
+          { label: "Search Now", value: context.request.searchNow ? "yes" : "no" },
+          { label: "Tags", value: context.request.tagIds?.length ?? 0 },
+        ],
+        actions: [
+          {
+            id: "request-series",
+            label: requestToolsEnabled ? "Request series" : "Requests disabled",
+            kind: "submit",
+            disabled: warnings.length > 0 || !requestToolsEnabled,
+            payload: {
+              tool: "request_series",
+              ...context.request,
+            },
+          },
+        ],
+      },
+    ]), panelState({
+      warnings: warnings.length > 0 || !requestToolsEnabled
+        ? [...warnings, ...(!requestToolsEnabled ? ["Request tools are disabled"] : [])]
+        : [],
+      confirmActionId: "request-series",
+      confirmLabel: "Confirm series request",
+      confirmDetail: `Request ${context.selected.title} in Sonarr`,
+    })),
+    requestDraft: seriesRequestDraft({
+      selected: context.selected,
+      qualityProfiles: context.qualityProfiles,
+      rootFolders: context.rootFolders,
+      tags: context.tags,
+      request: context.request,
+    }),
+    components: discordSeriesPreviewComponents({
+      summary,
+      selected: context.selected,
+      request: context.request,
+      qualityProfile: context.qualityProfile,
+      rootFolder: context.rootFolder,
+      formFields,
+      disabled: warnings.length > 0 || !requestToolsEnabled,
+    }),
+    payloadPreview: sonarrAddPayload(context.selected, context.request),
+    warnings,
+  });
+}
+
+export async function requestSeries(input: SeriesRequestInput) {
+  requireRequestToolsEnabled();
+  const context = await validateSeriesRequest(input);
+  if (context.existing) throw new Error(`${context.selected.title} already exists in Sonarr`);
+
+  const result = await sonarrAddSeries(context.app, sonarrAddPayload(context.selected, context.request));
+  const expectedEpisodeCount = expectedEpisodeCountForMonitor(result, context.request.monitorMode)
+    ?? expectedEpisodeCountForMonitor(context.selected, context.request.monitorMode);
+  const summary = `Requested ${result.title ?? context.selected.title} in Sonarr.`;
+  return toSummary({
+    summary,
+    view: withViewState(componentView("Series Requested", summary, [
+      {
+        id: "series-requested",
+        title: "Sonarr",
+        tone: "ok",
+        metrics: [
+          { label: "Series", value: result.title ?? context.selected.title },
+          { label: "Search", value: context.request.searchNow ? "started" : "not started" },
+        ],
+      },
+    ]), panelState({ successDetail: summary })),
+    series: {
+      id: result.id,
+      tvdbId: result.tvdbId,
+      title: result.title,
+      year: result.year,
+      monitored: result.monitored,
+    },
+    expectedEpisodeCount,
+    monitorMode: context.request.monitorMode,
   });
 }
 
