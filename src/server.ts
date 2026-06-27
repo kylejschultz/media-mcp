@@ -23,6 +23,7 @@ import {
   previewSeriesRequest,
   radarrRequestOptions,
   recentActivity,
+  requestFollowStatus,
   requestMovie,
   requestSeries,
   searchMovie,
@@ -58,6 +59,16 @@ const seriesRequestInput = {
   seasonFolder: z.boolean().default(true),
   searchNow: z.boolean().default(true),
   tagIds: z.array(z.number().int().positive()).default([]),
+};
+const requestFollowInput = {
+  service: z.enum(["sonarr", "radarr"]),
+  title: z.string().optional(),
+  tmdbId: z.number().int().positive().optional(),
+  tvdbId: z.number().int().positive().optional(),
+  year: z.number().int().positive().optional(),
+  expectedEpisodeCount: z.number().int().positive().optional(),
+  monitorMode: z.string().optional(),
+  polls: z.number().int().min(0).default(0),
 };
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;
@@ -391,6 +402,16 @@ export function createMediaMcpServer() {
       inputSchema: seriesRequestInput,
     },
     tool((args) => requestSeries(args)),
+  );
+
+  server.registerTool(
+    "request_follow_status",
+    {
+      title: "Request Follow Status",
+      description: "Return normalized request lifecycle status from queue/history for a Radarr movie or Sonarr series.",
+      inputSchema: requestFollowInput,
+    },
+    tool((args) => requestFollowStatus(args)),
   );
 
   server.registerTool(

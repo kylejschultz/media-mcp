@@ -38,6 +38,8 @@ import {
   withViewState,
   type DiscordComponentField,
   type DiscordComponentSpec,
+  type ViewItem,
+  type ViewMetric,
 } from "./views.js";
 
 function configuredTargets(appName?: AppName) {
@@ -1815,6 +1817,17 @@ type SeriesRequestInput = {
   tagIds?: number[];
 };
 
+type RequestFollowInput = {
+  service: "sonarr" | "radarr";
+  title?: string;
+  tmdbId?: number;
+  tvdbId?: number;
+  year?: number;
+  expectedEpisodeCount?: number;
+  monitorMode?: string;
+  polls?: number;
+};
+
 type SeriesRequestDefaults = {
   qualityProfileId?: number;
   rootFolderPath?: string;
@@ -2233,6 +2246,266 @@ function expectedEpisodeCountForMonitor(series: AnyRecord, monitorMode?: string)
   }
 
   return undefined;
+}
+
+function normalizeMediaTitle(value: unknown) {
+  return String(value ?? "")
+    .toLowerCase()
+    .replace(/['’]/g, "")
+    .replace(/&/g, "and")
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+function mediaTitleTokens(value: unknown) {
+  return normalizeMediaTitle(value)
+    .split(/\s+/)
+    .filter((token) => token.length > 1);
+}
+
+function seriesTitleKey(value: unknown) {
+  const text = String(value ?? "")
+    .replace(/\((\d{4})\)/g, " $1 ")
+    .replace(/\b\d{4}\b/g, " ")
+    .replace(/\bS\d{1,2}(?:E\d{1,3})?\b.*$/i, " ")
+    .replace(/\b\d{1,2}x\d{1,3}\b.*$/i, " ");
+  return normalizeMediaTitle(text);
+}
+
+function titleMatchesMovie(candidateTitle: unknown, movieTitle: unknown) {
+  const candidate = normalizeMediaTitle(candidateTitle);
+  const tokens = mediaTitleTokens(movieTitle);
+  if (!candidate || tokens.length === 0) return false;
+  return tokens.every((token) => candidate.includes(token));
+}
+
+function titleMatchesSeries(candidateTitle: unknown, seriesTitle: unknown) {
+  const candidate = seriesTitleKey(candidateTitle);
+  const selected = seriesTitleKey(seriesTitle);
+  const tokens = mediaTitleTokens(seriesTitle).filter((token) => !/^\d{4}$/.test(token));
+  if (!candidate || !selected || tokens.length === 0) return false;
+  return candidate === selected || tokens.every((token) => candidate.split(/\s+/).includes(token));
+}
+
+function titleMatchesFollow(candidateTitle: unknown, track: RequestFollowInput) {
+  return track.service === "sonarr"
+    ? titleMatchesSeries(candidateTitle, track.title)
+    : titleMatchesMovie(candidateTitle, track.title);
+}
+
+function episodeMarkers(value: unknown) {
+  const text = String(value ?? "");
+  const markers = new Set<string>();
+  for (const match of text.matchAll(/\bS(\d{1,2})E(\d{1,3})\b/gi)) {
+    markers.add(`s${match[1].padStart(2, "0")}e${match[2].padStart(2, "0")}`);
+  }
+  for (const match of text.matchAll(/\b(\d{1,2})x(\d{1,3})\b/gi)) {
+    markers.add(`s${match[1].padStart(2, "0")}e${match[2].padStart(2, "0")}`);
+  }
+  return markers;
+}
+
+function uniqueEpisodeMarkers(items: AnyRecord[]) {
+  const markers = new Set<string>();
+  for (const item of items) {
+    for (const marker of episodeMarkers(item.title)) markers.add(marker);
+  }
+  return markers;
+}
+
+function countedEpisodeTotal(items: AnyRecord[]) {
+  const markers = uniqueEpisodeMarkers(items);
+  return markers.size || items.length;
+}
+
+function followItems(result: AnyRecord, serviceName: string, track: RequestFollowInput): AnyRecord[] {
+  const service = Array.isArray(result?.services)
+    ? result.services.find((entry: AnyRecord) => entry?.service === serviceName)
+    : undefined;
+  const items = Array.isArray(service?.items) ? service.items : [];
+  return String(track.title ?? "") ? items.filter((item: AnyRecord) => titleMatchesFollow(item?.title, track)) : [];
+}
+
+function firstFollowItem(result: AnyRecord, serviceName: string, track: RequestFollowInput) {
+  return followItems(result, serviceName, track)[0];
+}
+
+function followStatusView(args: {
+  title: string;
+  noun: string;
+  status: AnyRecord;
+  track: RequestFollowInput;
+}) {
+  const complete = Boolean(args.status.complete);
+  const failed = Boolean(args.status.failed);
+  const tone = failed ? "error" : complete ? "ok" : "info";
+  const metrics = [
+    { label: "Status", value: args.status.label, tone },
+    args.status.progress !== undefined ? { label: "Progress", value: `${args.status.progress}%`, tone: "info" as const } : undefined,
+    args.status.eta ? { label: "ETA", value: args.status.eta, tone: "info" as const } : undefined,
+  ].filter(Boolean) as ViewMetric[];
+  const items = [
+    args.status.episodeDetail ? { label: "Episodes", value: args.status.episodeDetail } : undefined,
+    args.status.detail ? { label: "Detail", detail: args.status.detail } : undefined,
+  ].filter(Boolean) as ViewItem[];
+  return withViewState(componentView(`${args.noun} Request`, args.status.summary, [
+    {
+      id: "request-follow",
+      title: args.title,
+      tone,
+      metrics,
+      items,
+    },
+  ]), complete
+    ? { kind: "success", detail: args.status.summary }
+    : failed
+      ? { kind: "error", label: args.status.label, detail: args.status.detail, errors: [args.status.summary] }
+      : { kind: "loading", label: args.status.label, detail: args.status.detail });
+}
+
+export async function requestFollowStatus(input: RequestFollowInput) {
+  const service = input.service === "sonarr" ? "sonarr" : "radarr";
+  const title = String(input.title ?? "").trim();
+  if (!title && service === "sonarr" && !input.tvdbId) throw new Error("Series follow status needs a title or TVDB id.");
+  if (!title && service === "radarr" && !input.tmdbId) throw new Error("Movie follow status needs a title or TMDB id.");
+
+  const track: RequestFollowInput = {
+    ...input,
+    service,
+    title,
+    expectedEpisodeCount: Number(input.expectedEpisodeCount) || undefined,
+    polls: Number(input.polls ?? 0),
+  };
+  const serviceLabel = service === "sonarr" ? "Sonarr" : "Radarr";
+  const noun = service === "sonarr" ? "Series" : "Movie";
+  const displayTitle = title || (service === "sonarr" ? `TVDB ${track.tvdbId}` : `TMDB ${track.tmdbId}`);
+  const [sabQueue, arrQueue, arrHistory, sabHistory]: AnyRecord[] = await Promise.all([
+    downloadQueue("sabnzbd", 20).catch((error) => ({ error })),
+    downloadQueue(service, 20).catch((error) => ({ error })),
+    recentActivity(service, 20).catch((error) => ({ error })),
+    recentActivity("sabnzbd", 20).catch((error) => ({ error })),
+  ]);
+
+  const sabQueueItems = followItems(sabQueue, "sabnzbd", track);
+  const arrQueueItems = followItems(arrQueue, service, track);
+  const activeItems = [...arrQueueItems, ...sabQueueItems];
+  const sabQueueItem = sabQueueItems[0];
+  const arrQueueItem = arrQueueItems[0];
+  const arrItems = followItems(arrHistory, service, track);
+  const sabHistoryItem = firstFollowItem(sabHistory, "sabnzbd", track);
+  const importedItems = arrItems.filter((item) => String(item?.eventType ?? "").toLowerCase() === "downloadfolderimported");
+  const imported = importedItems[0];
+  const failed = arrItems.find((item) => String(item?.eventType ?? "").toLowerCase().includes("fail"))
+    ?? (sabHistoryItem && sabHistoryItem.successful === false ? sabHistoryItem : undefined);
+  const grabbed = arrItems.find((item) => String(item?.eventType ?? "").toLowerCase() === "grabbed");
+  const expectedEpisodeCount = track.expectedEpisodeCount;
+  const activeEpisodeCount = service === "sonarr" ? countedEpisodeTotal(activeItems) : Math.max(arrQueueItems.length, sabQueueItems.length);
+  const importedCount = service === "sonarr" ? countedEpisodeTotal(importedItems) : importedItems.length;
+  const importedDetail = expectedEpisodeCount
+    ? `Imported: ${Math.min(importedCount, expectedEpisodeCount)}/${expectedEpisodeCount}`
+    : importedCount > 0 ? `Imported: ${importedCount} recent` : undefined;
+
+  let status: AnyRecord;
+  if (service === "sonarr" && expectedEpisodeCount && importedCount >= expectedEpisodeCount) {
+    status = {
+      complete: true,
+      label: "Imported",
+      summary: `${displayTitle} imported ${expectedEpisodeCount}/${expectedEpisodeCount} expected episodes into ${serviceLabel}.`,
+      episodeDetail: `Imported: ${expectedEpisodeCount}/${expectedEpisodeCount}`,
+      detail: importedItems[0]?.title,
+    };
+  } else if (service === "sonarr" && activeEpisodeCount > 1) {
+    const progressValues = activeItems.map((item) => Number(item?.progress)).filter((value) => Number.isFinite(value));
+    const averageProgress = progressValues.length > 0
+      ? Math.round(progressValues.reduce((sum, value) => sum + value, 0) / progressValues.length)
+      : undefined;
+    status = {
+      label: "Downloading",
+      summary: `${displayTitle} has ${activeEpisodeCount} episode downloads active.`,
+      episodeDetail: [`Queue: ${activeEpisodeCount} episodes`, importedDetail].filter(Boolean).join("\n"),
+      detail: arrQueueItem?.title ?? sabQueueItem?.title,
+      progress: averageProgress,
+      eta: activeItems.map((item) => item?.eta).find(Boolean),
+    };
+  } else if (service === "sonarr" && importedCount > 0 && expectedEpisodeCount) {
+    status = {
+      label: "Importing",
+      summary: `${displayTitle} has imported ${importedCount}/${expectedEpisodeCount} expected episodes.`,
+      episodeDetail: importedDetail,
+      detail: importedItems[0]?.title,
+    };
+  } else if (imported) {
+    status = {
+      complete: true,
+      label: "Imported",
+      summary: `${displayTitle} imported into ${serviceLabel}.`,
+      detail: imported.title,
+    };
+  } else if (sabQueueItem) {
+    status = {
+      label: String(sabQueueItem.status ?? "Downloading"),
+      summary: `${displayTitle} is active in SABnzbd.`,
+      episodeDetail: service === "sonarr" ? importedDetail : undefined,
+      detail: sabQueueItem.title,
+      progress: sabQueueItem.progress,
+      eta: sabQueueItem.eta,
+    };
+  } else if (arrQueueItem) {
+    status = {
+      label: String(arrQueueItem.status ?? arrQueueItem.trackedDownloadStatus ?? "Downloading"),
+      summary: `${displayTitle} is active in ${serviceLabel}'s queue.`,
+      episodeDetail: service === "sonarr" ? importedDetail : undefined,
+      detail: arrQueueItem.title,
+      progress: arrQueueItem.progress,
+      eta: arrQueueItem.eta,
+    };
+  } else if (failed && !grabbed) {
+    status = {
+      failed: true,
+      complete: true,
+      label: "Failed",
+      summary: `${displayTitle} hit a failed download state.`,
+      detail: failed.title,
+    };
+  } else if (grabbed) {
+    status = {
+      label: "Grabbed",
+      summary: `${displayTitle} was grabbed by ${serviceLabel}; waiting for download/import status.`,
+      detail: grabbed.title,
+    };
+  } else if (sabHistoryItem) {
+    status = {
+      label: String(sabHistoryItem.eventType ?? "SAB history"),
+      summary: `${displayTitle} has SABnzbd history; waiting for ${serviceLabel} import.`,
+      detail: sabHistoryItem.title,
+    };
+  } else {
+    status = {
+      label: "Requested",
+      summary: `${displayTitle} was requested in ${serviceLabel}; waiting for queue activity.`,
+      detail: service === "sonarr"
+        ? (track.tvdbId ? `TVDB: ${track.tvdbId}` : "Tracking by title")
+        : (track.tmdbId ? `TMDB: ${track.tmdbId}` : "Tracking by title"),
+    };
+  }
+
+  status.polls = track.polls;
+  const summary = status.summary;
+  return toSummary({
+    summary,
+    view: followStatusView({ title: displayTitle, noun, status, track }),
+    followStatus: status,
+    track,
+    queue: {
+      service: arrQueueItems.length,
+      sabnzbd: sabQueueItems.length,
+    },
+    history: {
+      service: arrItems.length,
+      sabnzbd: sabHistoryItem ? 1 : 0,
+      imported: importedCount,
+    },
+  });
 }
 
 export async function previewSeriesRequest(input: SeriesRequestInput) {

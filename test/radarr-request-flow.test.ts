@@ -53,6 +53,8 @@ const tags = [{ id: 7, label: "discord" }];
 const fetchCalls: FetchCall[] = [];
 let existingMovies: unknown[] = [];
 let existingSeries: unknown[] = [];
+let queueRecords: unknown[] = [];
+let historyRecords: unknown[] = [];
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -65,6 +67,8 @@ beforeEach(() => {
   fetchCalls.length = 0;
   existingMovies = [];
   existingSeries = [];
+  queueRecords = [];
+  historyRecords = [];
   process.env.ALLOW_REQUESTS = "";
 });
 
@@ -101,6 +105,10 @@ globalThis.fetch = async (input, init) => {
       return jsonResponse(existingMovies);
     case "/api/v3/series":
       return jsonResponse(existingSeries);
+    case "/api/v3/queue":
+      return jsonResponse({ totalRecords: queueRecords.length, records: queueRecords });
+    case "/api/v3/history":
+      return jsonResponse({ totalRecords: historyRecords.length, records: historyRecords });
     default:
       return jsonResponse({ error: `Unhandled test URL: ${url}` }, 404);
   }
@@ -196,6 +204,67 @@ describe("Radarr request draft contract", () => {
     );
 
     assert.equal(fetchCalls.some((call) => call.method === "POST"), false);
+  });
+});
+
+describe("Request follow status", () => {
+  it("aggregates multiple Sonarr episode queue items", async () => {
+    queueRecords = [
+      {
+        title: "Sugar.2024.S02E02.Downer.Town.2160p.WEB-DL",
+        status: "downloading",
+        size: 1000,
+        sizeleft: 200,
+        timeleft: "00:02:00",
+      },
+      {
+        title: "Sugar.S02E01.Home.Away.from.Home.2160p.WEB-DL",
+        status: "downloading",
+        size: 1000,
+        sizeleft: 1000,
+      },
+    ];
+
+    const result = await media.requestFollowStatus({
+      service: "sonarr",
+      title: "Sugar",
+      expectedEpisodeCount: 2,
+      polls: 3,
+    }) as any;
+
+    assert.equal(result.followStatus.label, "Downloading");
+    assert.equal(result.followStatus.progress, 40);
+    assert.match(result.followStatus.episodeDetail, /Queue: 2 episodes/);
+    assert.match(result.followStatus.episodeDetail, /Imported: 0\/2/);
+    assert.equal(result.queue.service, 2);
+    assert.equal(result.followStatus.polls, 3);
+  });
+
+  it("completes Sonarr follow status when expected imports arrive", async () => {
+    historyRecords = [
+      {
+        sourceTitle: "Sugar.2024.S02E02.Downer.Town.2160p.WEB-DL",
+        eventType: "downloadFolderImported",
+        date: "2026-06-27T07:42:07Z",
+      },
+      {
+        sourceTitle: "Sugar.S02E01.Home.Away.from.Home.2160p.WEB-DL",
+        eventType: "downloadFolderImported",
+        date: "2026-06-27T07:44:20Z",
+      },
+    ];
+
+    const result = await media.requestFollowStatus({
+      service: "sonarr",
+      title: "Sugar",
+      expectedEpisodeCount: 2,
+    }) as any;
+
+    assert.equal(result.followStatus.complete, true);
+    assert.equal(result.followStatus.label, "Imported");
+    assert.match(result.followStatus.episodeDetail, /Imported: 2\/2/);
+    assert.equal(result.history.imported, 2);
+    assert.equal(result.view.state.kind, "success");
   });
 });
 

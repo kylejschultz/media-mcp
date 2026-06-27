@@ -195,10 +195,9 @@ optional ready-to-render component specs. Keep the boundary stable:
   only when `ALLOW_REQUESTS=true`.
 - Request series: call `request_series` only from a confirmed preview action and
   only when `ALLOW_REQUESTS=true`.
-- Follow request status: poll `media_queue` and `media_history` for the target
-  service, plus SABnzbd when needed. Sonarr follow views should aggregate
-  individual episode queue/import events and display counts such as `1/2
-  imported` when the expected episode count is known.
+- Follow request status: call `request_follow_status`. The MCP server owns
+  queue/history polling, title matching, Sonarr episode aggregation, and counts
+  such as `1/2 imported` when the expected episode count is known.
 
 ### Standard Panel States
 
@@ -242,6 +241,7 @@ additive; existing clients can ignore it until the panel opts in.
 - `search_series` - search Sonarr series candidates and return selectable request draft options.
 - `preview_series_request` - validate a Sonarr series request without writing.
 - `request_series` - add an exact selected series to Sonarr when `ALLOW_REQUESTS=true`.
+- `request_follow_status` - return normalized request lifecycle status from queue/history for a Radarr movie or Sonarr series.
 - `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
 - `beets_flask_status` - show read-only beets-flask queue, worker, inbox, and library status.
 - `slskd_status` - show read-only slskd Soulseek connection, transfer, and share status.
