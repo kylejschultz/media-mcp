@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
 import { beforeEach, describe, it } from "node:test";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 
 process.env.RADARR_URL = "http://radarr.test";
 process.env.RADARR_API_KEY = "test-api-key";
@@ -115,6 +117,38 @@ globalThis.fetch = async (input, init) => {
 };
 
 const media = await import("../src/media.js");
+const { createMediaMcpServer } = await import("../src/server.js");
+
+async function withMcpClient<T>(fn: (client: Client) => Promise<T>) {
+  const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+  const server = createMediaMcpServer();
+  const client = new Client({
+    name: "media-mcp-contract-test",
+    version: "0.1.0",
+  });
+  await server.connect(serverTransport);
+  await client.connect(clientTransport);
+  try {
+    return await fn(client);
+  } finally {
+    await client.close();
+  }
+}
+
+async function callToolJson(client: Client, name: string, args: Record<string, unknown> = {}) {
+  const result = await client.callTool({ name, arguments: args });
+  const text = result.content.find((entry) => entry.type === "text")?.text;
+  assert.equal(result.isError, undefined, text);
+  assert.ok(text, `expected text content from ${name}`);
+  return JSON.parse(text);
+}
+
+async function callToolError(client: Client, name: string, args: Record<string, unknown> = {}) {
+  const result = await client.callTool({ name, arguments: args });
+  const text = result.content.find((entry) => entry.type === "text")?.text ?? "";
+  assert.equal(result.isError, true, `expected ${name} to return MCP tool error`);
+  return text;
+}
 
 function fieldById(result: any, id: string) {
   const field = result.requestDraft.formFields.find((candidate: any) => candidate.id === id);
@@ -206,6 +240,68 @@ describe("Radarr request draft contract", () => {
     );
 
     assert.equal(fetchCalls.some((call) => call.method === "POST"), false);
+  });
+});
+
+describe("MCP-only request workflows", () => {
+  it("runs movie search, preview, blocked write, allowed write, and follow status through MCP tools", async () => {
+    await withMcpClient(async (client) => {
+      const search = await callToolJson(client, "search_movie", { query: "test movie", limit: 10 });
+      assert.equal(search.requestDraft.schema, "media-mcp.requestDraft.v1");
+      assert.equal(search.requestDraft.kind, "movie");
+      assert.equal(search.candidates[0].tmdbId, 123);
+      assert.equal("components" in search, false);
+
+      const preview = await callToolJson(client, "preview_movie_request", {
+        tmdbId: 123,
+        qualityProfileId: 1,
+        rootFolderPath: "/movies",
+        monitored: true,
+        searchNow: true,
+      });
+      assert.equal(preview.view.schema, "media-mcp.view.v1");
+      assert.equal(preview.view.cards[0].actions[0].payload.tool, "request_movie");
+      assert.equal(preview.requestDraft.writeGate.enabled, false);
+      assert.equal("components" in preview, false);
+
+      const blocked = await callToolError(client, "request_movie", {
+        tmdbId: 123,
+        qualityProfileId: 1,
+        rootFolderPath: "/movies",
+        monitored: true,
+        searchNow: true,
+      });
+      assert.match(blocked, /Request tools are disabled/);
+      assert.equal(fetchCalls.some((call) => call.method === "POST"), false);
+
+      process.env.ALLOW_REQUESTS = "true";
+      const requested = await callToolJson(client, "request_movie", {
+        tmdbId: 123,
+        qualityProfileId: 1,
+        rootFolderPath: "/movies",
+        monitored: true,
+        searchNow: false,
+      });
+      assert.equal(requested.movie.tmdbId, 123);
+      assert.equal(requested.view.state.kind, "success");
+      assert.equal(fetchCalls.some((call) => call.method === "POST" && call.path === "/api/v3/movie"), true);
+
+      historyRecords = [
+        {
+          sourceTitle: "Test Movie.2026.1080p.WEB-DL",
+          eventType: "downloadFolderImported",
+          date: "2026-06-29T07:00:00Z",
+        },
+      ];
+      const follow = await callToolJson(client, "request_follow_status", {
+        service: "radarr",
+        title: "Test Movie",
+        tmdbId: 123,
+      });
+      assert.equal(follow.followStatus.complete, true);
+      assert.equal(follow.followStatus.label, "Imported");
+      assert.equal(follow.view.state.kind, "success");
+    });
   });
 });
 

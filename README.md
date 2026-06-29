@@ -154,6 +154,10 @@ Clients should call MCP tools directly and render from the returned neutral
 payloads. The server does not emit Discord component IDs, modal routes, message
 edit instructions, resident panel state, or ready-to-render platform components.
 
+See [`docs/CLIENT_CONTRACT.md`](docs/CLIENT_CONTRACT.md) for the durable client
+contract and [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) for
+release/deploy verification.
+
 - `summary`, `checkedAt`, `warnings`, and `errors` are common fallback fields.
 - `view.cards[]` group visible content; `metrics[]`, `items[]`, `media`, and
   `actions[]` are renderer hints, not raw API contracts.
