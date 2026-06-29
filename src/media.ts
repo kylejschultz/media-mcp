@@ -33,11 +33,10 @@ import {
   componentView,
   countTone,
   healthTone,
-  panelState,
+  viewState,
   serviceLabel,
   withViewState,
-  type DiscordComponentField,
-  type DiscordComponentSpec,
+  type RequestDraftField,
   type ViewItem,
   type ViewMetric,
 } from "./views.js";
@@ -228,7 +227,7 @@ export async function serviceStatus(appName?: AppName) {
           tone: service.reachable && service.authenticated && service.warnings.length === 0 ? "ok" : "warning",
         })),
       },
-    ]), panelState({ warnings })),
+    ]), viewState({ warnings })),
     services,
     missing,
     warnings,
@@ -342,7 +341,7 @@ export async function serviceHealth(appName?: AppName) {
           tone: service.ok ? "ok" : service.health === "error" ? "error" : "warning",
         })),
       },
-    ]), panelState({ warnings })),
+    ]), viewState({ warnings })),
     services,
     warnings,
   });
@@ -406,7 +405,7 @@ export async function diskSpace() {
           })),
         ),
       },
-    ]), panelState({ empty: services.every((service) => service.paths.length === 0), emptyLabel: "No disk paths reported", warnings })),
+    ]), viewState({ empty: services.every((service) => service.paths.length === 0), emptyLabel: "No disk paths reported", warnings })),
     services,
     skipped,
     warnings,
@@ -495,7 +494,7 @@ export async function downloadQueue(appName?: QueueAppName, pageSize = 50) {
         metrics: total > 0 ? [{ label: "Items", value: total, tone: countTone(total) }] : [],
         items: [...queueItems, ...queueWarnings],
       },
-    ]), panelState({ empty: total === 0, emptyLabel: "No active queue items", warnings })),
+    ]), viewState({ empty: total === 0, emptyLabel: "No active queue items", warnings })),
     services,
     warnings,
   });
@@ -596,7 +595,7 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
           tone: service.warnings?.length ? "warning" : service.items.length > 0 ? "info" : "ok",
         })),
       },
-    ]), panelState({ empty: total === 0, emptyLabel: "No recent activity", warnings })),
+    ]), viewState({ empty: total === 0, emptyLabel: "No recent activity", warnings })),
     services,
     warnings,
   });
@@ -638,7 +637,7 @@ export async function wantedMissingNormalized(appName: LibraryAppName, pageSize 
           tone: "info",
         })),
       },
-    ]), panelState({ empty: result.ok && total === 0, emptyLabel: `No missing wanted items for ${app.label}`, warnings })),
+    ]), viewState({ empty: result.ok && total === 0, emptyLabel: `No missing wanted items for ${app.label}`, warnings })),
     service: app.name,
     total,
     items,
@@ -706,7 +705,7 @@ export async function missingSummary(pageSize = 10) {
       },
       ...missingCards,
       ...missingWarnings,
-    ]), panelState({ empty: total === 0, emptyLabel: "No missing wanted media", warnings })),
+    ]), viewState({ empty: total === 0, emptyLabel: "No missing wanted media", warnings })),
     services,
     warnings,
   });
@@ -1031,7 +1030,7 @@ export async function libraryCounts() {
             : []),
         ],
       },
-    ]), panelState({ warnings })),
+    ]), viewState({ warnings })),
     counts,
     warnings,
   });
@@ -1103,7 +1102,7 @@ export async function importIssues(pageSize = 50) {
           };
         }),
       },
-    ]), panelState({
+    ]), viewState({
       empty: queueIssues.length === 0 && failedHistory.length === 0,
       emptyLabel: "No active import issues",
       warnings,
@@ -1144,7 +1143,7 @@ export async function indexerStatus() {
           tone: indexer.enable ? "ok" : "warning",
         })),
       },
-    ]), panelState({
+    ]), viewState({
       empty: indexerList.length === 0,
       emptyLabel: "No indexers configured",
       warnings: [...warnings, ...disabled.map((indexer) => `${indexer.indexerId ?? "indexer"}: disabled or failed`)],
@@ -1256,7 +1255,7 @@ export async function mediaStackOverview() {
           { label: "Expectations", value: getStackModel().expectations.serviceIssues.length },
         ],
       },
-    ]), panelState({ warnings })),
+    ]), viewState({ warnings })),
     status,
     health,
     queues,
@@ -1398,7 +1397,7 @@ function movieRequestFormFields(args: {
   qualityProfiles: AnyRecord[];
   rootFolders: AnyRecord[];
   defaults: MovieRequestDefaults;
-}): DiscordComponentField[] {
+}): RequestDraftField[] {
   return [
     {
       id: "qualityProfileId",
@@ -1478,97 +1477,6 @@ function truncateComponentText(value: unknown, maxLength: number) {
   return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
 }
 
-function movieLabel(record: AnyRecord) {
-  return truncateComponentText(`${record.title ?? "Untitled"}${record.year ? ` (${record.year})` : ""}`, 100);
-}
-
-function movieDescription(record: AnyRecord) {
-  const pieces = [
-    record.isExisting ? "Already in Radarr" : undefined,
-    Array.isArray(record.genres) ? record.genres.slice(0, 2).join(", ") : undefined,
-    record.certification,
-  ].filter(Boolean);
-  return pieces.length > 0 ? truncateComponentText(pieces.join(" | "), 100) : undefined;
-}
-
-function moviePreviewCommand(record: AnyRecord) {
-  return `Preview Radarr movie TMDB ${record.tmdbId} with default request options`;
-}
-
-function discordMovieSearchComponents(query: string, summary: string, candidates: AnyRecord[]): DiscordComponentSpec | undefined {
-  if (candidates.length === 0) return;
-  const featured = candidates[0];
-  const poster = moviePoster(featured);
-  return {
-    container: { accentColor: "#2f81f7" },
-    blocks: [
-      { type: "text", text: `**Movie Search**\n${summary}` },
-      {
-        type: "section",
-        text: `Pick the exact match for "${truncateComponentText(query, 80)}".`,
-        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
-      },
-      {
-        type: "actions",
-        select: {
-          type: "string",
-          placeholder: "Choose a movie to preview",
-          minValues: 1,
-          maxValues: 1,
-          callbackDataKind: "command",
-          options: candidates.slice(0, 25).map((candidate) => ({
-            label: movieLabel(candidate),
-            value: moviePreviewCommand(candidate),
-            description: movieDescription(candidate),
-          })),
-        },
-      },
-    ],
-  };
-}
-
-function discordMoviePreviewComponents(args: {
-  summary: string;
-  selected: AnyRecord;
-  request: MovieRequestInput;
-  qualityProfile: AnyRecord;
-  rootFolder: AnyRecord;
-  formFields: DiscordComponentField[];
-  disabled: boolean;
-}): DiscordComponentSpec {
-  const poster = moviePoster(args.selected);
-  return {
-    container: { accentColor: args.disabled ? "#9a6700" : "#1a7f37" },
-    blocks: [
-      {
-        type: "section",
-        texts: [
-          `**${movieLabel(args.selected)}**`,
-          args.summary,
-          `Quality: ${args.qualityProfile.name}\nRoot: ${args.rootFolder.path}\nMonitored: ${args.request.monitored ? "yes" : "no"}\nSearch now: ${args.request.searchNow ? "yes" : "no"}`,
-        ],
-        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
-      },
-      {
-        type: "form",
-        fields: args.formFields,
-      },
-      {
-        type: "actions",
-        buttons: [
-          {
-            label: args.disabled ? "Requests disabled" : "Request movie",
-            style: args.disabled ? "secondary" : "success",
-            disabled: args.disabled,
-            callbackData: `Request Radarr movie TMDB ${args.request.tmdbId}`,
-            callbackDataKind: "command",
-          },
-        ],
-      },
-    ],
-  };
-}
-
 export async function radarrRequestOptions() {
   const app = getApp("radarr");
   const [qualityProfiles, rootFolders, tags] = await Promise.all([
@@ -1646,8 +1554,7 @@ export async function searchMovie(query: string, limit = 10) {
             ]
           : undefined,
       },
-    ]), panelState({ empty: candidates.length === 0, emptyLabel: "No movie candidates found" })),
-    components: discordMovieSearchComponents(query, summary, candidates),
+    ]), viewState({ empty: candidates.length === 0, emptyLabel: "No movie candidates found" })),
     candidates: candidates.map(movieCandidate),
     requestDraft: movieRequestDraft({ candidates, qualityProfiles, rootFolders, tags }),
   });
@@ -1709,11 +1616,6 @@ export async function previewMovieRequest(input: MovieRequestInput) {
     rootFolders: context.rootFolders,
     request: context.request,
   });
-  const formFields = movieRequestFormFields({
-    qualityProfiles: context.qualityProfiles,
-    rootFolders: context.rootFolders,
-    defaults,
-  });
   const summary = warnings.length > 0
     ? `Preview ready for ${context.selected.title}; ${warnings[0]}.`
     : `Preview ready to request ${context.selected.title} (${context.selected.year}) in Radarr.`;
@@ -1748,7 +1650,7 @@ export async function previewMovieRequest(input: MovieRequestInput) {
           },
         ],
       },
-    ]), panelState({
+    ]), viewState({
       warnings: warnings.length > 0 || !requestToolsEnabled
         ? [...warnings, ...(!requestToolsEnabled ? ["Request tools are disabled"] : [])]
         : [],
@@ -1762,15 +1664,6 @@ export async function previewMovieRequest(input: MovieRequestInput) {
       rootFolders: context.rootFolders,
       tags: context.tags,
       request: context.request,
-    }),
-    components: discordMoviePreviewComponents({
-      summary,
-      selected: context.selected,
-      request: context.request,
-      qualityProfile: context.qualityProfile,
-      rootFolder: context.rootFolder,
-      formFields,
-      disabled: warnings.length > 0 || !requestToolsEnabled,
     }),
     payloadPreview: radarrAddPayload(context.selected, context.request),
     warnings,
@@ -1796,7 +1689,7 @@ export async function requestMovie(input: MovieRequestInput) {
           { label: "Search", value: context.request.searchNow ? "started" : "not started" },
         ],
       },
-    ]), panelState({ successDetail: summary })),
+    ]), viewState({ successDetail: summary })),
     movie: {
       id: result.id,
       tmdbId: result.tmdbId,
@@ -1896,7 +1789,7 @@ function seriesRequestFormFields(args: {
   qualityProfiles: AnyRecord[];
   rootFolders: AnyRecord[];
   defaults: SeriesRequestDefaults;
-}): DiscordComponentField[] {
+}): RequestDraftField[] {
   return [
     {
       id: "qualityProfileId",
@@ -1983,98 +1876,6 @@ function seriesRequestDraft(args: {
   };
 }
 
-function seriesLabel(record: AnyRecord) {
-  return truncateComponentText(`${record.title ?? "Untitled"}${record.year ? ` (${record.year})` : ""}`, 100);
-}
-
-function seriesDescription(record: AnyRecord) {
-  const pieces = [
-    record.isExisting ? "Already in Sonarr" : undefined,
-    record.network,
-    Array.isArray(record.genres) ? record.genres.slice(0, 2).join(", ") : undefined,
-  ].filter(Boolean);
-  return pieces.length > 0 ? truncateComponentText(pieces.join(" | "), 100) : undefined;
-}
-
-function seriesPreviewCommand(record: AnyRecord) {
-  return `Preview Sonarr series TVDB ${record.tvdbId} with default request options`;
-}
-
-function discordSeriesSearchComponents(query: string, summary: string, candidates: AnyRecord[]): DiscordComponentSpec | undefined {
-  if (candidates.length === 0) return;
-  const featured = candidates[0];
-  const poster = seriesPoster(featured);
-  return {
-    container: { accentColor: "#2f81f7" },
-    blocks: [
-      { type: "text", text: `**Series Search**\n${summary}` },
-      {
-        type: "section",
-        text: `Pick the exact match for "${truncateComponentText(query, 80)}".`,
-        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
-      },
-      {
-        type: "actions",
-        select: {
-          type: "string",
-          placeholder: "Choose a series to preview",
-          minValues: 1,
-          maxValues: 1,
-          callbackDataKind: "command",
-          options: candidates.slice(0, 25).map((candidate) => ({
-            label: seriesLabel(candidate),
-            value: seriesPreviewCommand(candidate),
-            description: seriesDescription(candidate),
-          })),
-        },
-      },
-    ],
-  };
-}
-
-function discordSeriesPreviewComponents(args: {
-  summary: string;
-  selected: AnyRecord;
-  request: SeriesRequestInput;
-  qualityProfile: AnyRecord;
-  rootFolder: AnyRecord;
-  formFields: DiscordComponentField[];
-  disabled: boolean;
-}): DiscordComponentSpec {
-  const poster = seriesPoster(args.selected);
-  const monitor = sonarrMonitorOptions.find((option) => option.id === args.request.monitorMode)?.label ?? args.request.monitorMode;
-  return {
-    container: { accentColor: args.disabled ? "#9a6700" : "#1a7f37" },
-    blocks: [
-      {
-        type: "section",
-        texts: [
-          `**${seriesLabel(args.selected)}**`,
-          args.summary,
-          `Quality: ${args.qualityProfile.name}\nRoot: ${args.rootFolder.path}\nMonitor: ${monitor}\nSeason folders: ${args.request.seasonFolder ? "yes" : "no"}\nSearch now: ${args.request.searchNow ? "yes" : "no"}`,
-        ],
-        accessory: poster ? { type: "thumbnail", url: poster.url } : undefined,
-      },
-      {
-        type: "form",
-        fields: args.formFields,
-      },
-      {
-        type: "actions",
-        buttons: [
-          {
-            label: args.disabled ? "Requests disabled" : "Request series",
-            style: args.disabled ? "secondary" : "success",
-            disabled: args.disabled,
-            callbackData: `Request Sonarr series TVDB ${args.request.tvdbId}`,
-            callbackDataKind: "command",
-          },
-        ],
-      },
-    ],
-  };
-}
-
 export async function sonarrRequestOptions() {
   const app = getApp("sonarr");
   const [qualityProfiles, rootFolders, tags] = await Promise.all([
@@ -2153,8 +1954,7 @@ export async function searchSeries(query: string, limit = 10) {
             ]
           : undefined,
       },
-    ]), panelState({ empty: candidates.length === 0, emptyLabel: "No series candidates found" })),
-    components: discordSeriesSearchComponents(query, summary, candidates),
+    ]), viewState({ empty: candidates.length === 0, emptyLabel: "No series candidates found" })),
     candidates: candidates.map(seriesCandidate),
     requestDraft: seriesRequestDraft({ candidates, qualityProfiles, rootFolders, tags }),
   });
@@ -2519,11 +2319,6 @@ export async function previewSeriesRequest(input: SeriesRequestInput) {
     rootFolders: context.rootFolders,
     request: context.request,
   });
-  const formFields = seriesRequestFormFields({
-    qualityProfiles: context.qualityProfiles,
-    rootFolders: context.rootFolders,
-    defaults,
-  });
   const monitor = sonarrMonitorOptions.find((option) => option.id === context.request.monitorMode)?.label ?? context.request.monitorMode;
   const summary = warnings.length > 0
     ? `Preview ready for ${context.selected.title}; ${warnings[0]}.`
@@ -2560,7 +2355,7 @@ export async function previewSeriesRequest(input: SeriesRequestInput) {
           },
         ],
       },
-    ]), panelState({
+    ]), viewState({
       warnings: warnings.length > 0 || !requestToolsEnabled
         ? [...warnings, ...(!requestToolsEnabled ? ["Request tools are disabled"] : [])]
         : [],
@@ -2574,15 +2369,6 @@ export async function previewSeriesRequest(input: SeriesRequestInput) {
       rootFolders: context.rootFolders,
       tags: context.tags,
       request: context.request,
-    }),
-    components: discordSeriesPreviewComponents({
-      summary,
-      selected: context.selected,
-      request: context.request,
-      qualityProfile: context.qualityProfile,
-      rootFolder: context.rootFolder,
-      formFields,
-      disabled: warnings.length > 0 || !requestToolsEnabled,
     }),
     payloadPreview: sonarrAddPayload(context.selected, context.request),
     warnings,
@@ -2610,7 +2396,7 @@ export async function requestSeries(input: SeriesRequestInput) {
           { label: "Search", value: context.request.searchNow ? "started" : "not started" },
         ],
       },
-    ]), panelState({ successDetail: summary })),
+    ]), viewState({ successDetail: summary })),
     series: {
       id: result.id,
       tvdbId: result.tvdbId,

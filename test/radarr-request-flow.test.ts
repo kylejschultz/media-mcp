@@ -131,6 +131,7 @@ describe("Radarr request draft contract", () => {
     assert.equal(result.requestDraft.service, "radarr");
     assert.equal(result.requestDraft.writeGate.env, "ALLOW_REQUESTS");
     assert.equal(result.requestDraft.writeGate.enabled, false);
+    assert.equal("components" in result, false);
 
     const quality = fieldById(result, "qualityProfileId");
     assert.equal(quality.type, "select");
@@ -172,6 +173,7 @@ describe("Radarr request draft contract", () => {
     assert.equal(fieldById(result, "searchNow").value, false);
     assert.equal(result.payloadPreview.monitored, false);
     assert.equal(result.payloadPreview.addOptions.searchForMovie, false);
+    assert.equal("components" in result, false);
   });
 
   it("keeps submit disabled while request tools are disabled", async () => {
@@ -277,6 +279,7 @@ describe("Sonarr request draft contract", () => {
     assert.equal(result.requestDraft.service, "sonarr");
     assert.equal(result.requestDraft.writeGate.env, "ALLOW_REQUESTS");
     assert.equal(result.requestDraft.writeGate.enabled, false);
+    assert.equal("components" in result, false);
 
     const quality = fieldById(result, "qualityProfileId");
     assert.equal(quality.type, "select");
@@ -325,6 +328,7 @@ describe("Sonarr request draft contract", () => {
     assert.equal(result.payloadPreview.addOptions.monitor, "future");
     assert.equal(result.payloadPreview.seasonFolder, false);
     assert.equal(result.payloadPreview.addOptions.searchForMissingEpisodes, false);
+    assert.equal("components" in result, false);
   });
 
   it("keeps series submit disabled while request tools are disabled", async () => {

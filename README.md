@@ -148,62 +148,46 @@ renderers:
 This field is additive. Clients can ignore it and keep reading the existing
 `summary`, `services`, and raw data fields.
 
-## Panel Interaction Contract
+## Client Rendering Contract
 
-The Discord panel router owns component IDs, loading transitions, and message
-edits. This MCP server owns the tool results, normalized `view` payloads, and
-optional ready-to-render component specs. Keep the boundary stable:
+Clients should call MCP tools directly and render from the returned neutral
+payloads. The server does not emit Discord component IDs, modal routes, message
+edit instructions, resident panel state, or ready-to-render platform components.
 
-- Panel actions should call one MCP tool and render from `view` when present.
-- `summary`, `checkedAt`, `warnings`, and `errors` are the common fallback
-  fields for all panel responses.
-- `view.cards[]` group the visible content; `metrics[]`, `items[]`, `media`,
-  and `actions[]` are renderer hints, not raw API contracts.
-- `components` is an optional Discord-specific override for flows that need
-  exact controls, such as movie search and request preview.
+- `summary`, `checkedAt`, `warnings`, and `errors` are common fallback fields.
+- `view.cards[]` group visible content; `metrics[]`, `items[]`, `media`, and
+  `actions[]` are renderer hints, not raw API contracts.
+- `requestDraft` is the neutral request-building contract for movie and series
+  flows. It contains candidate options, quality/root/tag choices, defaults,
+  selected request values, generic form field descriptors, and write gate state.
 - Write actions must stay behind the existing safety gate and should be reached
   through a preview or confirmation state.
+- Platform-specific clients, such as the Discord panel plugin, own component
+  IDs, callbacks, modal routing, message edits, display formatting, and local
+  resident state.
 
-### Current Panel Action Map
+### Core Request Flow
 
-- Status / overview: call `media_stack_overview`; render the main stack card
-  view with service, health, queue, missing, disk, indexer, library, and import
-  issue summaries.
-- Queue: call `download_queue` for stack-wide queue status, or `media_queue`
-  for a single queue-capable app.
-- Issues: call `get_import_issues` and, when the panel wants broader service
-  context, pair it with `service_health`.
-- Missing: call `get_missing_summary` for the stack summary, or
-  `media_wanted_missing` for a single Sonarr/Radarr/Lidarr list.
-- History: call `recent_activity` for the stack summary, or `media_history` for
-  a single configured app.
-- Indexers: call `indexer_status`.
-- Search indexers: call `media_search`.
-- Search movies: call `search_movie`; use `components` when present for the
-  result dropdown, otherwise render the returned `requestDraft`/`view`.
-  `requestDraft.formFields` contains generic request option descriptors such as
-  root folder, quality profile, monitor state, and search-now.
-- Search series: call `search_series`; use the same `requestDraft.formFields`
-  contract as movies. Series adds monitor mode and season-folder controls.
-- Preview movie request: call `preview_movie_request`; render the returned
-  preview state and request option controls. Disable submit when warnings or
-  the write gate require it.
-- Preview series request: call `preview_series_request`; render the returned
-  preview state and request option controls. When monitor mode maps to a known
-  aired season count, preserve `expectedEpisodeCount` for follow-up status.
-- Request movie: call `request_movie` only from a confirmed preview action and
-  only when `ALLOW_REQUESTS=true`.
-- Request series: call `request_series` only from a confirmed preview action and
-  only when `ALLOW_REQUESTS=true`.
-- Follow request status: call `request_follow_status`. The MCP server owns
+- Search movies with `search_movie`; select from `candidates` or
+  `requestDraft.candidateOptions`.
+- Search series with `search_series`; use the same `requestDraft` contract.
+- Preview movie requests with `preview_movie_request`; render the returned
+  `view`, `requestDraft`, `payloadPreview`, and warnings.
+- Preview series requests with `preview_series_request`; preserve returned
+  monitor options and expected episode metadata where useful for follow-up.
+- Write movies with `request_movie` only after preview and only when
+  `ALLOW_REQUESTS=true`.
+- Write series with `request_series` only after preview and only when
+  `ALLOW_REQUESTS=true`.
+- Follow request lifecycle with `request_follow_status`. The MCP server owns
   queue/history polling, title matching, Sonarr episode aggregation, and counts
   such as `1/2 imported` when the expected episode count is known.
 
-### Standard Panel States
+### Standard View States
 
-Renderers should normalize every action into one of these states:
+Renderers may normalize actions into these states:
 
-- `loading`: panel has accepted the interaction and is waiting on the MCP tool.
+- `loading`: client has accepted an interaction and is waiting on the MCP tool.
 - `success`: tool returned usable content.
 - `empty`: tool succeeded but has no actionable rows or results.
 - `partial_failure`: tool returned usable content plus warnings.
@@ -211,7 +195,7 @@ Renderers should normalize every action into one of these states:
 - `confirm`: user must confirm before a write action runs.
 
 `media-mcp.view.v1` includes an optional `state` field for these states. It is
-additive; existing clients can ignore it until the panel opts in.
+additive; clients can ignore it and consume the raw result fields instead.
 
 ## Tools
 
@@ -269,7 +253,7 @@ browser-based clients.
 
 - Refactored shared adapters, formatting helpers, result wrappers, and view helpers out of the main media orchestration module.
 - Added `radarr_request_options`, `search_movie`, `preview_movie_request`, and gated `request_movie`.
-- Added neutral `media-mcp.requestDraft.v1` payloads so OpenClaw/Discord can render search and preview results as form-like flows.
+- Added neutral `media-mcp.requestDraft.v1` payloads so clients can render search and preview results as form-like flows.
 - Added `ALLOW_REQUESTS`; request/write tools stay disabled unless this is explicitly set to `true`.
 - Hardened Streamable HTTP CORS defaults and redacted upstream response bodies before returning tool errors.
 
@@ -283,12 +267,11 @@ browser-based clients.
 
 - Centralized server version metadata so MCP server info and HTTP health output match package releases.
 
-### 2026-06-24 - v0.2.3 Discord Request Components
+### 2026-06-24 - v0.2.3 Request Component Experiment
 
-- Added ready-to-render Discord component specs to Radarr movie search and preview responses.
-- Movie search now includes a selectable dropdown for ambiguous results, with compact command callbacks for preview follow-up.
-- Movie preview now includes a poster-backed request component with the submit action disabled while `ALLOW_REQUESTS=false`.
+- Added experimental ready-to-render Discord component specs to Radarr movie search and preview responses. These were later removed from the server contract; client-specific rendering now belongs in client plugins.
+- The experiment shaped later client-side dropdown and preview rendering in the optional Discord panel plugin.
 
 ### 2026-06-24 - v0.2.4 Version Metadata Fix
 
-- Updated server version metadata for the Discord request component release.
+- Updated server version metadata for the request component experiment release.

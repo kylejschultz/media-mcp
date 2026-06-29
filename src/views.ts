@@ -64,58 +64,20 @@ export type ViewAction = {
   payload?: Record<string, unknown>;
 };
 
-export type DiscordComponentOption = {
+export type RequestDraftOption = {
   label: string;
   value: string;
   description?: string;
 };
 
-export type DiscordComponentField = {
+export type RequestDraftField = {
   id: string;
   label: string;
   type: "select" | "checkbox";
   required?: boolean;
   value?: string | number | boolean | string[] | number[];
   placeholder?: string;
-  options?: DiscordComponentOption[];
-};
-
-export type DiscordComponentSpec = {
-  container?: {
-    accentColor?: string;
-  };
-  blocks: Array<
-    | { type: "text"; text: string }
-    | {
-        type: "section";
-        text?: string;
-        texts?: string[];
-        accessory?: { type: "thumbnail"; url: string };
-      }
-    | { type: "separator" }
-    | {
-        type: "form";
-        fields: DiscordComponentField[];
-      }
-    | {
-        type: "actions";
-        buttons?: Array<{
-          label: string;
-          style?: "primary" | "secondary" | "success" | "danger" | "link";
-          callbackData?: string;
-          callbackDataKind?: "command" | "callback";
-          disabled?: boolean;
-        }>;
-        select?: {
-          type: "string";
-          placeholder?: string;
-          minValues?: number;
-          maxValues?: number;
-          callbackDataKind?: "command" | "callback";
-          options: DiscordComponentOption[];
-        };
-      }
-  >;
+  options?: RequestDraftOption[];
 };
 
 export type ViewCard = {
@@ -140,7 +102,7 @@ export function componentView(title: string, summary: string, cards: ViewCard[])
   return { schema: "media-mcp.view.v1", title, summary, cards };
 }
 
-export function panelState(args: {
+export function viewState(args: {
   empty?: boolean;
   emptyLabel?: string;
   emptyDetail?: string;
