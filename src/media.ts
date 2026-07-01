@@ -1,5 +1,6 @@
 import { apps, type AppConfig, type AppName, configuredApps, getApp } from "./config.js";
 import {
+  arrCommand,
   arrHealth,
   arrQualityProfiles,
   arrRootFolders,
@@ -14,10 +15,12 @@ import {
   radarrAddMovie,
   radarrMovieLookup,
   radarrMovies,
+  radarrUpdateMovie,
   sabVersion,
   sonarrAddSeries,
   sonarrSeries,
   sonarrSeriesLookup,
+  sonarrUpdateSeries,
   slskdDownloads,
   slskdServer,
   slskdShares,
@@ -30,7 +33,7 @@ import { requireRequestToolsEnabled, safetyStatus } from "./safety.js";
 import { expectedServiceIssue, getStackFlow, getStackModel, type StackFlowName } from "./stack-model.js";
 import { diskApps, libraryApps, queueApps, type AnyRecord, type LibraryAppName, type QueueAppName } from "./types.js";
 import {
-  componentView,
+  mediaView,
   countTone,
   healthTone,
   viewState,
@@ -211,7 +214,7 @@ export async function serviceStatus(appName?: AppName) {
   const summary = `${okCount}/${services.length} configured services are reachable. ${missing.length} services have missing env config.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Service Status", summary, [
+    view: withViewState(mediaView("Service Status", summary, [
       {
         id: "reachability",
         title: "Reachability",
@@ -325,7 +328,7 @@ export async function serviceHealth(appName?: AppName) {
   );
   return toSummary({
     summary,
-    view: withViewState(componentView("Service Health", summary, [
+    view: withViewState(mediaView("Service Health", summary, [
       {
         id: "health",
         title: "Health",
@@ -390,7 +393,7 @@ export async function diskSpace() {
   const summary = low.length === 0 ? "No media service-visible disks are above 90% used." : `${low.length} media service-visible paths are above 90% used.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Disk Space", summary, [
+    view: withViewState(mediaView("Disk Space", summary, [
       {
         id: "disks",
         title: "Service-Visible Paths",
@@ -486,7 +489,7 @@ export async function downloadQueue(appName?: QueueAppName, pageSize = 50) {
     }));
   return toSummary({
     summary,
-    view: withViewState(componentView("Download Queue", summary, [
+    view: withViewState(mediaView("Download Queue", summary, [
       {
         id: "queue",
         title: "Queue",
@@ -579,7 +582,7 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
   const summary = `${total} recent activity items returned across ${services.length} services.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Recent Activity", summary, [
+    view: withViewState(mediaView("Recent Activity", summary, [
       {
         id: "activity",
         title: "Recent Activity",
@@ -625,7 +628,7 @@ export async function wantedMissingNormalized(appName: LibraryAppName, pageSize 
   const warnings = result.ok ? [] : [result.error];
   return toSummary({
     summary,
-    view: withViewState(componentView("Wanted Missing", summary, [
+    view: withViewState(mediaView("Wanted Missing", summary, [
       {
         id: "missing",
         title: app.label,
@@ -695,7 +698,7 @@ export async function missingSummary(pageSize = 10) {
     }));
   return toSummary({
     summary,
-    view: withViewState(componentView("Missing Media", summary, [
+    view: withViewState(mediaView("Missing Media", summary, [
       {
         id: "missing",
         title: "Wanted Missing",
@@ -719,7 +722,7 @@ export async function jellyfinInfo() {
     : `Jellyfin system info failed: ${result.error}`;
   return toSummary({
     summary,
-    view: componentView("Jellyfin System", summary, [
+    view: mediaView("Jellyfin System", summary, [
       {
         id: "system",
         title: "System",
@@ -749,7 +752,7 @@ export async function jellyfinLibraryCounts() {
   const summary = result.ok ? "Jellyfin library counts loaded." : `Jellyfin library counts failed: ${result.error}`;
   return toSummary({
     summary,
-    view: componentView("Jellyfin Libraries", summary, [
+    view: mediaView("Jellyfin Libraries", summary, [
       {
         id: "libraries",
         title: "Libraries",
@@ -775,7 +778,7 @@ export async function jellyfinActiveSessions() {
   const summary = result.ok ? `${sessions.length} Jellyfin sessions returned.` : `Jellyfin sessions failed: ${result.error}`;
   return toSummary({
     summary,
-    view: componentView("Jellyfin Sessions", summary, [
+    view: mediaView("Jellyfin Sessions", summary, [
       {
         id: "sessions",
         title: "Active Sessions",
@@ -814,7 +817,7 @@ export async function jellyfinRecentActivity(pageSize = 20) {
   const summary = result.ok ? `${items.length} Jellyfin activity items returned.` : `Jellyfin activity failed: ${result.error}`;
   return toSummary({
     summary,
-    view: componentView("Jellyfin Activity", summary, [
+    view: mediaView("Jellyfin Activity", summary, [
       {
         id: "activity",
         title: "Recent Activity",
@@ -843,7 +846,7 @@ export async function jellyfinScheduledTasks() {
   const summary = result.ok ? `${tasks.length} Jellyfin scheduled tasks returned; ${running.length} running.` : `Jellyfin scheduled tasks failed: ${result.error}`;
   return toSummary({
     summary,
-    view: componentView("Jellyfin Tasks", summary, [
+    view: mediaView("Jellyfin Tasks", summary, [
       {
         id: "tasks",
         title: "Scheduled Tasks",
@@ -895,7 +898,7 @@ export async function beetsFlaskStatus() {
     : `beets-flask reported ${warnings.length} warnings; ${inboxAlbums.length} inbox albums pending preview/import.`;
   return toSummary({
     summary,
-    view: componentView("beets-flask", summary, [
+    view: mediaView("beets-flask", summary, [
       {
         id: "pipeline",
         title: "Music Import Pipeline",
@@ -950,7 +953,7 @@ export async function slskdStatus() {
     : `slskd reported ${warnings.length} warnings; ${activeDownloads.length} active downloads.`;
   return toSummary({
     summary,
-    view: componentView("slskd", summary, [
+    view: mediaView("slskd", summary, [
       {
         id: "transfers",
         title: "Soulseek Transfers",
@@ -1012,7 +1015,7 @@ export async function libraryCounts() {
   const summary = `Library counts loaded for ${loaded}/${expected} categories.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Library Counts", summary, [
+    view: withViewState(mediaView("Library Counts", summary, [
       {
         id: "libraries",
         title: "Libraries",
@@ -1082,7 +1085,7 @@ export async function importIssues(pageSize = 50) {
   const summary = `${queueIssues.length} queue/import warnings and ${failedHistory.length} unresolved failed recent history items found; ${resolvedCount} later completed.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Import Issues", summary, [
+    view: withViewState(mediaView("Import Issues", summary, [
       {
         id: "issues",
         title: "Issues",
@@ -1127,7 +1130,7 @@ export async function indexerStatus() {
   const summary = `${indexerList.length} indexers configured; ${disabled.length} currently have failure/disabled status.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Indexer Status", summary, [
+    view: withViewState(mediaView("Indexer Status", summary, [
       {
         id: "indexers",
         title: "Prowlarr Indexers",
@@ -1200,7 +1203,7 @@ export async function mediaStackOverview() {
   const summary = `${reachable}/${services.length} services reachable. ${queues.summary} ${missing.summary}`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Media Stack", summary, [
+    view: withViewState(mediaView("Media Stack", summary, [
       {
         id: "services",
         title: "Services",
@@ -1275,7 +1278,7 @@ export async function mediaStackModel() {
   const summary = `Generated stack model loaded from ${model.source.title}; ${flowCount} media flows and ${model.expectations.serviceIssues.length} stack-aware service expectations.`;
   return toSummary({
     summary,
-    view: componentView("Stack Model", summary, [
+    view: mediaView("Stack Model", summary, [
       {
         id: "source",
         title: "Source",
@@ -1299,7 +1302,7 @@ export async function mediaStackFlow(mediaType?: StackFlowName) {
   const summary = mediaType ? `${getStackModel().flows[mediaType].label} flow loaded from generated stack model.` : "All media flows loaded from generated stack model.";
   return toSummary({
     summary,
-    view: componentView("Media Flow", summary, [
+    view: mediaView("Media Flow", summary, [
       {
         id: "flows",
         title: mediaType ? getStackModel().flows[mediaType].label : "Flows",
@@ -1407,7 +1410,7 @@ function movieRequestFormFields(args: {
       value: args.defaults.qualityProfileId,
       placeholder: "Choose quality",
       options: qualityProfileOptions(args.qualityProfiles).map((profile) => ({
-        label: truncateComponentText(profile.label, 100),
+        label: truncateOptionText(profile.label, 100),
         value: String(profile.id),
       })),
     },
@@ -1419,7 +1422,7 @@ function movieRequestFormFields(args: {
       value: args.defaults.rootFolderPath,
       placeholder: "Choose root folder",
       options: rootFolderOptions(args.rootFolders).map((folder) => ({
-        label: truncateComponentText(folder.label, 100),
+        label: truncateOptionText(folder.label, 100),
         value: folder.path,
         description: folder.freeSpace !== undefined ? `${bytes(Number(folder.freeSpace))} free` : undefined,
       })),
@@ -1471,7 +1474,7 @@ function movieRequestDraft(args: {
   };
 }
 
-function truncateComponentText(value: unknown, maxLength: number) {
+function truncateOptionText(value: unknown, maxLength: number) {
   const text = String(value ?? "").trim();
   if (text.length <= maxLength) return text;
   return `${text.slice(0, Math.max(0, maxLength - 1)).trimEnd()}...`;
@@ -1487,7 +1490,7 @@ export async function radarrRequestOptions() {
   const summary = `${qualityProfiles.length} Radarr quality profiles and ${rootFolders.length} root folders available.`;
   return toSummary({
     summary,
-    view: componentView("Radarr Request Options", summary, [
+    view: mediaView("Radarr Request Options", summary, [
       {
         id: "radarr-options",
         title: "Options",
@@ -1521,7 +1524,7 @@ export async function searchMovie(query: string, limit = 10) {
   const defaultRootFolder = rootFolders[0];
   return toSummary({
     summary,
-    view: withViewState(componentView("Movie Search", summary, [
+    view: withViewState(mediaView("Movie Search", summary, [
       {
         id: "movie-results",
         title: "Results",
@@ -1621,7 +1624,7 @@ export async function previewMovieRequest(input: MovieRequestInput) {
     : `Preview ready to request ${context.selected.title} (${context.selected.year}) in Radarr.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Movie Request Preview", summary, [
+    view: withViewState(mediaView("Movie Request Preview", summary, [
       {
         id: "movie-request",
         title: context.selected.title,
@@ -1679,7 +1682,7 @@ export async function requestMovie(input: MovieRequestInput) {
   const summary = `Requested ${result.title ?? context.selected.title} in Radarr.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Movie Requested", summary, [
+    view: withViewState(mediaView("Movie Requested", summary, [
       {
         id: "movie-requested",
         title: "Radarr",
@@ -1700,6 +1703,96 @@ export async function requestMovie(input: MovieRequestInput) {
   });
 }
 
+function lifecycleView(args: {
+  title: string;
+  summary: string;
+  targetLabel: string;
+  monitored: boolean;
+  searchStarted: boolean;
+  detail?: string;
+}) {
+  return withViewState(mediaView(args.title, args.summary, [
+    {
+      id: "lifecycle",
+      title: args.targetLabel,
+      tone: "ok",
+      metrics: [
+        { label: "Monitored", value: args.monitored ? "yes" : "no", tone: args.monitored ? "ok" : "warning" },
+        { label: "Search", value: args.searchStarted ? "started" : "not started", tone: args.searchStarted ? "info" : "ok" },
+      ],
+      items: args.detail ? [{ label: "Scope", value: args.detail }] : undefined,
+    },
+  ]), viewState({ successDetail: args.summary }));
+}
+
+function movieLifecyclePayload(args: {
+  tmdbId: number;
+  movieId: number;
+  title?: string;
+  monitored: boolean;
+  searchStarted: boolean;
+  command?: AnyRecord;
+}) {
+  return {
+    schema: "media-mcp.lifecycle.v1",
+    service: "radarr",
+    mediaType: "movie",
+    action: "set_monitoring",
+    target: {
+      tmdbId: args.tmdbId,
+      movieId: args.movieId,
+      title: args.title,
+    },
+    monitored: args.monitored,
+    searchStarted: args.searchStarted,
+    commandId: args.command?.id,
+  };
+}
+
+export async function setMovieMonitoring(input: MovieMonitoringInput) {
+  requireRequestToolsEnabled();
+  const app = getApp("radarr");
+  const monitored = input.monitored ?? true;
+  const searchNow = input.searchNow ?? false;
+  const movies = await radarrMovies(app);
+  const existing = movies.find((candidate) => Number(candidate.tmdbId) === input.tmdbId);
+  if (!existing) throw new Error(`TMDB ID ${input.tmdbId} is not in Radarr; request the movie first.`);
+
+  const movieId = Number(existing.id);
+  if (!Number.isFinite(movieId) || movieId <= 0) throw new Error(`Radarr movie for TMDB ID ${input.tmdbId} has no usable id.`);
+
+  const updated = await radarrUpdateMovie(app, movieId, { ...existing, monitored });
+  const command = searchNow ? await arrCommand(app, { name: "MoviesSearch", movieIds: [movieId] }) : undefined;
+  const title = String(updated.title ?? existing.title ?? `TMDB ${input.tmdbId}`);
+  const summary = `Updated ${title} monitoring in Radarr${searchNow ? " and started a movie search" : ""}.`;
+  const lifecycle = movieLifecyclePayload({
+    tmdbId: input.tmdbId,
+    movieId,
+    title,
+    monitored,
+    searchStarted: Boolean(command),
+    command,
+  });
+  return toSummary({
+    summary,
+    view: lifecycleView({
+      title: "Movie Monitoring Updated",
+      summary,
+      targetLabel: title,
+      monitored,
+      searchStarted: Boolean(command),
+    }),
+    lifecycle,
+    movie: {
+      id: updated.id ?? movieId,
+      tmdbId: updated.tmdbId ?? input.tmdbId,
+      title,
+      monitored: updated.monitored ?? monitored,
+    },
+    command,
+  });
+}
+
 type SeriesRequestInput = {
   tvdbId: number;
   qualityProfileId: number;
@@ -1708,6 +1801,24 @@ type SeriesRequestInput = {
   seasonFolder?: boolean;
   searchNow?: boolean;
   tagIds?: number[];
+};
+
+type MovieMonitoringInput = {
+  tmdbId: number;
+  monitored?: boolean;
+  searchNow?: boolean;
+};
+
+type SeriesSeasonMonitoringInput = {
+  tvdbId: number;
+  seasonNumber: number;
+  monitored?: boolean;
+  searchNow?: boolean;
+};
+
+type SeriesSeasonRequestInput = SeriesRequestInput & {
+  seasonNumber: number;
+  monitored?: boolean;
 };
 
 type RequestFollowInput = {
@@ -1799,7 +1910,7 @@ function seriesRequestFormFields(args: {
       value: args.defaults.qualityProfileId,
       placeholder: "Choose quality",
       options: qualityProfileOptions(args.qualityProfiles).map((profile) => ({
-        label: truncateComponentText(profile.label, 100),
+        label: truncateOptionText(profile.label, 100),
         value: String(profile.id),
       })),
     },
@@ -1811,7 +1922,7 @@ function seriesRequestFormFields(args: {
       value: args.defaults.rootFolderPath,
       placeholder: "Choose root folder",
       options: rootFolderOptions(args.rootFolders).map((folder) => ({
-        label: truncateComponentText(folder.label, 100),
+        label: truncateOptionText(folder.label, 100),
         value: folder.path,
         description: folder.freeSpace !== undefined ? `${bytes(Number(folder.freeSpace))} free` : undefined,
       })),
@@ -1886,7 +1997,7 @@ export async function sonarrRequestOptions() {
   const summary = `${qualityProfiles.length} Sonarr quality profiles and ${rootFolders.length} root folders available.`;
   return toSummary({
     summary,
-    view: componentView("Sonarr Request Options", summary, [
+    view: mediaView("Sonarr Request Options", summary, [
       {
         id: "sonarr-options",
         title: "Options",
@@ -1920,7 +2031,7 @@ export async function searchSeries(query: string, limit = 10) {
   const defaultRootFolder = rootFolders[0];
   return toSummary({
     summary,
-    view: withViewState(componentView("Series Search", summary, [
+    view: withViewState(mediaView("Series Search", summary, [
       {
         id: "series-results",
         title: "Results",
@@ -2019,6 +2130,126 @@ function sonarrAddPayload(selected: AnyRecord, request: SeriesRequestInput) {
 function seasonEpisodeCount(season: AnyRecord) {
   const value = Number(season?.statistics?.episodeCount ?? season?.statistics?.totalEpisodeCount ?? season?.episodeCount);
   return Number.isFinite(value) && value > 0 ? value : undefined;
+}
+
+function findSeason(series: AnyRecord, seasonNumber: number) {
+  return Array.isArray(series?.seasons)
+    ? series.seasons.find((season: AnyRecord) => Number(season?.seasonNumber) === seasonNumber)
+    : undefined;
+}
+
+function seasonScopedSeriesPayload(series: AnyRecord, seasonNumber: number, monitored: boolean) {
+  const seasons = Array.isArray(series?.seasons) ? series.seasons : [];
+  const selected = seasons.find((season: AnyRecord) => Number(season?.seasonNumber) === seasonNumber);
+  if (!selected) throw new Error(`${series.title ?? "Series"} does not have season ${seasonNumber} in Sonarr.`);
+
+  const updatedSeasons = seasons.map((season: AnyRecord) =>
+    Number(season?.seasonNumber) === seasonNumber ? { ...season, monitored } : { ...season });
+  return {
+    ...series,
+    monitored: updatedSeasons.some((season: AnyRecord) => Boolean(season.monitored)),
+    seasons: updatedSeasons,
+  };
+}
+
+function seasonOnlySeriesPayload(series: AnyRecord, seasonNumber: number, monitored: boolean) {
+  const seasons = Array.isArray(series?.seasons) ? series.seasons : [];
+  const selected = seasons.find((season: AnyRecord) => Number(season?.seasonNumber) === seasonNumber);
+  if (!selected) throw new Error(`${series.title ?? "Series"} does not have season ${seasonNumber} in Sonarr.`);
+
+  const updatedSeasons = seasons.map((season: AnyRecord) => ({
+    ...season,
+    monitored: Number(season?.seasonNumber) === seasonNumber ? monitored : false,
+  }));
+  return {
+    ...series,
+    monitored,
+    seasons: updatedSeasons,
+  };
+}
+
+function seasonLifecyclePayload(args: {
+  tvdbId: number;
+  seriesId: number;
+  title?: string;
+  seasonNumber: number;
+  monitored: boolean;
+  searchStarted: boolean;
+  expectedEpisodeCount?: number;
+  command?: AnyRecord;
+}) {
+  return {
+    schema: "media-mcp.lifecycle.v1",
+    service: "sonarr",
+    mediaType: "series",
+    action: "set_season_monitoring",
+    scope: "season",
+    target: {
+      tvdbId: args.tvdbId,
+      seriesId: args.seriesId,
+      title: args.title,
+      seasonNumber: args.seasonNumber,
+    },
+    monitored: args.monitored,
+    searchStarted: args.searchStarted,
+    expectedEpisodeCount: args.expectedEpisodeCount,
+    commandId: args.command?.id,
+  };
+}
+
+async function updateExistingSeriesSeason(input: SeriesSeasonMonitoringInput) {
+  const app = getApp("sonarr");
+  const monitored = input.monitored ?? true;
+  const searchNow = input.searchNow ?? false;
+  const allSeries = await sonarrSeries(app);
+  const existing = allSeries.find((candidate) => Number(candidate.tvdbId) === input.tvdbId);
+  if (!existing) throw new Error(`TVDB ID ${input.tvdbId} is not in Sonarr; request the series first.`);
+
+  const seriesId = Number(existing.id);
+  if (!Number.isFinite(seriesId) || seriesId <= 0) throw new Error(`Sonarr series for TVDB ID ${input.tvdbId} has no usable id.`);
+
+  const selectedSeason = findSeason(existing, input.seasonNumber);
+  const payload = seasonScopedSeriesPayload(existing, input.seasonNumber, monitored);
+  const updated = await sonarrUpdateSeries(app, seriesId, payload);
+  const command = searchNow ? await arrCommand(app, { name: "SeasonSearch", seriesId, seasonNumber: input.seasonNumber }) : undefined;
+  const title = String(updated.title ?? existing.title ?? `TVDB ${input.tvdbId}`);
+  const expectedEpisodeCount = seasonEpisodeCount(selectedSeason);
+  const summary = `Updated ${title} season ${input.seasonNumber} monitoring in Sonarr${searchNow ? " and started a season search" : ""}.`;
+  const lifecycle = seasonLifecyclePayload({
+    tvdbId: input.tvdbId,
+    seriesId,
+    title,
+    seasonNumber: input.seasonNumber,
+    monitored,
+    searchStarted: Boolean(command),
+    expectedEpisodeCount,
+    command,
+  });
+  return {
+    summary,
+    view: lifecycleView({
+      title: "Season Monitoring Updated",
+      summary,
+      targetLabel: `${title} season ${input.seasonNumber}`,
+      monitored,
+      searchStarted: Boolean(command),
+      detail: "Only the requested season was changed",
+    }),
+    lifecycle,
+    series: {
+      id: updated.id ?? seriesId,
+      tvdbId: updated.tvdbId ?? input.tvdbId,
+      title,
+      monitored: updated.monitored ?? payload.monitored,
+    },
+    season: {
+      seasonNumber: input.seasonNumber,
+      monitored,
+      expectedEpisodeCount,
+    },
+    expectedEpisodeCount,
+    command,
+  };
 }
 
 function expectedEpisodeCountForMonitor(series: AnyRecord, monitorMode?: string) {
@@ -2149,7 +2380,7 @@ function followStatusView(args: {
     args.status.episodeDetail ? { label: "Episodes", value: args.status.episodeDetail } : undefined,
     args.status.detail ? { label: "Detail", detail: args.status.detail } : undefined,
   ].filter(Boolean) as ViewItem[];
-  return withViewState(componentView(`${args.noun} Request`, args.status.summary, [
+  return withViewState(mediaView(`${args.noun} Request`, args.status.summary, [
     {
       id: "request-follow",
       title: args.title,
@@ -2157,10 +2388,10 @@ function followStatusView(args: {
       metrics,
       items,
     },
-  ]), complete
-    ? { kind: "success", detail: args.status.summary }
-    : failed
-      ? { kind: "error", label: args.status.label, detail: args.status.detail, errors: [args.status.summary] }
+  ]), failed
+    ? { kind: "error", label: args.status.label, detail: args.status.detail, errors: [args.status.summary] }
+    : complete
+      ? { kind: "success", detail: args.status.summary }
       : { kind: "loading", label: args.status.label, detail: args.status.detail });
 }
 
@@ -2210,6 +2441,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
   let status: AnyRecord;
   if (service === "sonarr" && expectedEpisodeCount && importedCount >= expectedEpisodeCount) {
     status = {
+      phase: "imported",
       complete: true,
       label: "Imported",
       summary: `${displayTitle} imported ${expectedEpisodeCount}/${expectedEpisodeCount} expected episodes into ${serviceLabel}.`,
@@ -2222,6 +2454,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
       ? Math.round(progressValues.reduce((sum, value) => sum + value, 0) / progressValues.length)
       : undefined;
     status = {
+      phase: "downloading",
       label: "Downloading",
       summary: `${displayTitle} has ${activeEpisodeCount} episode downloads active.`,
       episodeDetail: [`Queue: ${activeEpisodeCount} episodes`, importedDetail].filter(Boolean).join("\n"),
@@ -2231,6 +2464,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   } else if (service === "sonarr" && importedCount > 0 && expectedEpisodeCount) {
     status = {
+      phase: "importing",
       label: "Importing",
       summary: `${displayTitle} has imported ${importedCount}/${expectedEpisodeCount} expected episodes.`,
       episodeDetail: importedDetail,
@@ -2238,6 +2472,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   } else if (imported) {
     status = {
+      phase: "imported",
       complete: true,
       label: "Imported",
       summary: `${displayTitle} imported into ${serviceLabel}.`,
@@ -2245,6 +2480,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   } else if (sabQueueItem) {
     status = {
+      phase: "downloading",
       label: String(sabQueueItem.status ?? "Downloading"),
       summary: `${displayTitle} is active in SABnzbd.`,
       episodeDetail: service === "sonarr" ? importedDetail : undefined,
@@ -2254,6 +2490,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   } else if (arrQueueItem) {
     status = {
+      phase: "queued",
       label: String(arrQueueItem.status ?? arrQueueItem.trackedDownloadStatus ?? "Downloading"),
       summary: `${displayTitle} is active in ${serviceLabel}'s queue.`,
       episodeDetail: service === "sonarr" ? importedDetail : undefined,
@@ -2263,6 +2500,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   } else if (failed && !grabbed) {
     status = {
+      phase: "failed",
       failed: true,
       complete: true,
       label: "Failed",
@@ -2271,18 +2509,21 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   } else if (grabbed) {
     status = {
+      phase: "grabbed",
       label: "Grabbed",
       summary: `${displayTitle} was grabbed by ${serviceLabel}; waiting for download/import status.`,
       detail: grabbed.title,
     };
   } else if (sabHistoryItem) {
     status = {
+      phase: "importing",
       label: String(sabHistoryItem.eventType ?? "SAB history"),
       summary: `${displayTitle} has SABnzbd history; waiting for ${serviceLabel} import.`,
       detail: sabHistoryItem.title,
     };
   } else {
     status = {
+      phase: "requested",
       label: "Requested",
       summary: `${displayTitle} was requested in ${serviceLabel}; waiting for queue activity.`,
       detail: service === "sonarr"
@@ -2291,7 +2532,33 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     };
   }
 
-  status.polls = track.polls;
+  const terminal = Boolean(status.complete || status.failed);
+  const polls = Number(track.polls ?? 0);
+  Object.assign(status, {
+    schema: "media-mcp.followStatus.v1",
+    service,
+    mediaType: service === "sonarr" ? "series" : "movie",
+    title: displayTitle,
+    complete: Boolean(status.complete),
+    failed: Boolean(status.failed),
+    terminal,
+    expectedEpisodeCount,
+    activeCount: activeEpisodeCount,
+    importedCount,
+    queueCount: {
+      service: arrQueueItems.length,
+      sabnzbd: sabQueueItems.length,
+      total: activeItems.length,
+    },
+    historyCount: {
+      service: arrItems.length,
+      sabnzbd: sabHistoryItem ? 1 : 0,
+      imported: importedCount,
+    },
+    polls,
+    nextPollRecommended: !terminal,
+    pollDelaySeconds: terminal ? undefined : Math.min(60, 5 + polls * 5),
+  });
   const summary = status.summary;
   return toSummary({
     summary,
@@ -2325,7 +2592,7 @@ export async function previewSeriesRequest(input: SeriesRequestInput) {
     : `Preview ready to request ${context.selected.title} (${context.selected.year}) in Sonarr.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Series Request Preview", summary, [
+    view: withViewState(mediaView("Series Request Preview", summary, [
       {
         id: "series-request",
         title: context.selected.title,
@@ -2386,7 +2653,7 @@ export async function requestSeries(input: SeriesRequestInput) {
   const summary = `Requested ${result.title ?? context.selected.title} in Sonarr.`;
   return toSummary({
     summary,
-    view: withViewState(componentView("Series Requested", summary, [
+    view: withViewState(mediaView("Series Requested", summary, [
       {
         id: "series-requested",
         title: "Sonarr",
@@ -2406,6 +2673,81 @@ export async function requestSeries(input: SeriesRequestInput) {
     },
     expectedEpisodeCount,
     monitorMode: context.request.monitorMode,
+  });
+}
+
+export async function setSeriesSeasonMonitoring(input: SeriesSeasonMonitoringInput) {
+  requireRequestToolsEnabled();
+  return toSummary(await updateExistingSeriesSeason(input));
+}
+
+export async function requestSeriesSeason(input: SeriesSeasonRequestInput) {
+  requireRequestToolsEnabled();
+  const monitored = input.monitored ?? true;
+  const searchNow = input.searchNow ?? true;
+  const context = await validateSeriesRequest({
+    ...input,
+    monitorMode: "none",
+    searchNow: false,
+  });
+
+  if (context.existing) {
+    return toSummary(await updateExistingSeriesSeason({
+      tvdbId: input.tvdbId,
+      seasonNumber: input.seasonNumber,
+      monitored,
+      searchNow,
+    }));
+  }
+
+  const selectedSeason = findSeason(context.selected, input.seasonNumber);
+  const addPayload = seasonOnlySeriesPayload(
+    sonarrAddPayload(context.selected, { ...context.request, monitorMode: "none", searchNow: false }),
+    input.seasonNumber,
+    monitored,
+  );
+  const result = await sonarrAddSeries(context.app, addPayload);
+  const seriesId = Number(result.id);
+  const command = searchNow && Number.isFinite(seriesId) && seriesId > 0
+    ? await arrCommand(context.app, { name: "SeasonSearch", seriesId, seasonNumber: input.seasonNumber })
+    : undefined;
+  const title = String(result.title ?? context.selected.title ?? `TVDB ${input.tvdbId}`);
+  const expectedEpisodeCount = seasonEpisodeCount(selectedSeason);
+  const summary = `Requested ${title} season ${input.seasonNumber} in Sonarr${command ? " and started a season search" : ""}.`;
+  const lifecycle = seasonLifecyclePayload({
+    tvdbId: input.tvdbId,
+    seriesId,
+    title,
+    seasonNumber: input.seasonNumber,
+    monitored,
+    searchStarted: Boolean(command),
+    expectedEpisodeCount,
+    command,
+  });
+  return toSummary({
+    summary,
+    view: lifecycleView({
+      title: "Season Requested",
+      summary,
+      targetLabel: `${title} season ${input.seasonNumber}`,
+      monitored,
+      searchStarted: Boolean(command),
+      detail: "Only the requested season was monitored",
+    }),
+    lifecycle,
+    series: {
+      id: result.id,
+      tvdbId: result.tvdbId ?? input.tvdbId,
+      title,
+      monitored: result.monitored ?? monitored,
+    },
+    season: {
+      seasonNumber: input.seasonNumber,
+      monitored,
+      expectedEpisodeCount,
+    },
+    expectedEpisodeCount,
+    command,
   });
 }
 

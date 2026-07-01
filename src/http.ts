@@ -71,6 +71,23 @@ export async function arrPost<T>(app: AppConfig, path: string, body: unknown) {
   return readJson<T>(response, app.label);
 }
 
+export async function arrPut<T>(app: AppConfig, path: string, body: unknown) {
+  if (!app.url || !app.apiKey || !app.apiVersion) throw new Error(`${app.label} is not configured`);
+
+  const url = new URL(`/api/${app.apiVersion}/${trimSlashes(path)}`, app.url);
+  const response = await fetch(url, {
+    method: "PUT",
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      "X-Api-Key": app.apiKey,
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return readJson<T>(response, app.label);
+}
+
 export async function sabGet<T>(app: AppConfig, mode: string, params: Record<string, string | number | boolean | undefined> = {}) {
   if (!app.url || !app.apiKey) throw new Error(`${app.label} is not configured`);
 

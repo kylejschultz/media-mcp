@@ -155,8 +155,10 @@ payloads. The server does not emit Discord component IDs, modal routes, message
 edit instructions, resident panel state, or ready-to-render platform components.
 
 See [`docs/CLIENT_CONTRACT.md`](docs/CLIENT_CONTRACT.md) for the durable client
-contract and [`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) for
-release/deploy verification.
+contract, [`docs/ARCHITECTURE_BOUNDARY.md`](docs/ARCHITECTURE_BOUNDARY.md) for
+the server/client responsibility audit, and
+[`docs/RELEASE_CHECKLIST.md`](docs/RELEASE_CHECKLIST.md) for release/deploy
+verification.
 
 - `summary`, `checkedAt`, `warnings`, and `errors` are common fallback fields.
 - `view.cards[]` group visible content; `metrics[]`, `items[]`, `media`, and
@@ -183,6 +185,13 @@ release/deploy verification.
   `ALLOW_REQUESTS=true`.
 - Write series with `request_series` only after preview and only when
   `ALLOW_REQUESTS=true`.
+- Update existing movie monitoring with `set_movie_monitoring`; optionally
+  start a Radarr movie search.
+- Update one existing Sonarr season with `set_series_season_monitoring`;
+  neighboring seasons are not modified.
+- Request one Sonarr season with `request_series_season`. If the series already
+  exists, the tool updates only that season; if it is missing, the tool adds the
+  series with only the requested season monitored.
 - Follow request lifecycle with `request_follow_status`. The MCP server owns
   queue/history polling, title matching, Sonarr episode aggregation, and counts
   such as `1/2 imported` when the expected episode count is known.
@@ -225,10 +234,13 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `search_movie` - search Radarr movie candidates and return selectable request draft options.
 - `preview_movie_request` - validate a Radarr movie request without writing.
 - `request_movie` - add an exact selected movie to Radarr when `ALLOW_REQUESTS=true`.
+- `set_movie_monitoring` - update monitoring for an existing Radarr movie and optionally start a movie search.
 - `sonarr_request_options` - list Sonarr quality profiles, root folders, tags, monitor modes, and form-friendly request defaults.
 - `search_series` - search Sonarr series candidates and return selectable request draft options.
 - `preview_series_request` - validate a Sonarr series request without writing.
 - `request_series` - add an exact selected series to Sonarr when `ALLOW_REQUESTS=true`.
+- `set_series_season_monitoring` - update exactly one existing Sonarr season and optionally start a season search.
+- `request_series_season` - add or update a Sonarr series for one specific season only, then optionally start a season search.
 - `request_follow_status` - return normalized request lifecycle status from queue/history for a Radarr movie or Sonarr series.
 - `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
 - `beets_flask_status` - show read-only beets-flask queue, worker, inbox, and library status.

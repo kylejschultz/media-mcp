@@ -7,6 +7,12 @@ process.env.RADARR_URL = "http://radarr.test";
 process.env.RADARR_API_KEY = "test-api-key";
 process.env.SONARR_URL = "http://sonarr.test";
 process.env.SONARR_API_KEY = "test-api-key";
+process.env.LIDARR_URL = "http://lidarr.test";
+process.env.LIDARR_API_KEY = "test-api-key";
+process.env.PROWLARR_URL = "http://prowlarr.test";
+process.env.PROWLARR_API_KEY = "test-api-key";
+process.env.SABNZBD_URL = "http://sabnzbd.test";
+process.env.SABNZBD_API_KEY = "test-api-key";
 process.env.ALLOW_REQUESTS = "";
 
 type FetchCall = {
@@ -38,7 +44,11 @@ const series = {
   network: "Test Network",
   genres: ["Drama", "Sci-Fi"],
   remotePoster: "https://image.test/series.jpg",
-  seasons: [{ seasonNumber: 1, monitored: true }],
+  seasons: [
+    { seasonNumber: 1, monitored: true, statistics: { episodeCount: 3 } },
+    { seasonNumber: 2, monitored: false, statistics: { episodeCount: 2 } },
+    { seasonNumber: 3, monitored: true, statistics: { episodeCount: 4 } },
+  ],
 };
 
 const qualityProfiles = [
@@ -57,6 +67,8 @@ let existingMovies: unknown[] = [];
 let existingSeries: unknown[] = [];
 let queueRecords: unknown[] = [];
 let historyRecords: unknown[] = [];
+let missingRecords: unknown[] = [];
+const failedRequests = new Set<string>();
 
 function jsonResponse(value: unknown, status = 200) {
   return new Response(JSON.stringify(value), {
@@ -71,6 +83,8 @@ beforeEach(() => {
   existingSeries = [];
   queueRecords = [];
   historyRecords = [];
+  missingRecords = [];
+  failedRequests.clear();
   process.env.ALLOW_REQUESTS = "";
 });
 
@@ -84,6 +98,16 @@ globalThis.fetch = async (input, init) => {
     body: init?.body ? JSON.parse(String(init.body)) : undefined,
   };
   fetchCalls.push(call);
+  const sabMode = url.searchParams.get("mode");
+  const requestKeys = [
+    `${url.host}${url.pathname}`,
+    `${url.host}${url.pathname}:${sabMode ?? ""}`,
+    url.pathname,
+    `${url.pathname}:${sabMode ?? ""}`,
+  ];
+  if (requestKeys.some((key) => failedRequests.has(key))) {
+    return jsonResponse({ error: `Injected failure for ${url.host}${url.pathname}` }, 500);
+  }
 
   if (method === "POST" && url.pathname === "/api/v3/movie") {
     return jsonResponse({ id: 999, ...call.body });
@@ -91,12 +115,54 @@ globalThis.fetch = async (input, init) => {
   if (method === "POST" && url.pathname === "/api/v3/series") {
     return jsonResponse({ id: 888, ...call.body });
   }
+  if (method === "PUT" && url.pathname.match(/^\/api\/v3\/movie\/\d+$/)) {
+    return jsonResponse(call.body);
+  }
+  if (method === "PUT" && url.pathname.match(/^\/api\/v3\/series\/\d+$/)) {
+    return jsonResponse(call.body);
+  }
+  if (method === "POST" && url.pathname === "/api/v3/command") {
+    return jsonResponse({ id: 777, ...(call.body as Record<string, unknown>) });
+  }
+
+  if (url.pathname === "/api") {
+    switch (sabMode) {
+      case "version":
+        return jsonResponse({ version: "4.2.0" });
+      case "queue":
+        return jsonResponse({
+          queue: {
+            noofslots: "1",
+            speed: "1 MB/s",
+            mbleft: "500",
+            slots: queueRecords.length > 0
+              ? [{ filename: "Sab Queue Item", status: "Downloading", percentage: "25", timeleft: "00:10:00" }]
+              : [],
+          },
+        });
+      case "history":
+        return jsonResponse({
+          history: {
+            slots: historyRecords.filter((record: any) => record.service === "sabnzbd"),
+          },
+        });
+      default:
+        return jsonResponse({ error: `Unhandled SAB mode: ${sabMode}` }, 404);
+    }
+  }
 
   switch (url.pathname) {
+    case "/api/v1/system/status":
+      return jsonResponse({ version: "1.2.3", branch: "main" });
     case "/api/v3/movie/lookup":
       return jsonResponse(url.searchParams.get("term") === "tmdb:123" ? [movie] : [movie, { ...movie, tmdbId: 456, title: "Other Movie" }]);
     case "/api/v3/series/lookup":
       return jsonResponse(url.searchParams.get("term") === "tvdb:321" ? [series] : [series, { ...series, tvdbId: 654, title: "Other Series" }]);
+    case "/api/v3/system/status":
+      return jsonResponse({ version: "1.2.3", branch: "main" });
+    case "/api/v1/health":
+    case "/api/v3/health":
+      return jsonResponse([]);
     case "/api/v3/qualityprofile":
       return jsonResponse(qualityProfiles);
     case "/api/v3/rootfolder":
@@ -107,8 +173,30 @@ globalThis.fetch = async (input, init) => {
       return jsonResponse(existingMovies);
     case "/api/v3/series":
       return jsonResponse(existingSeries);
+    case "/api/v1/qualityprofile":
+      return jsonResponse(qualityProfiles);
+    case "/api/v1/rootfolder":
+      return jsonResponse(rootFolders);
+    case "/api/v1/tag":
+      return jsonResponse(tags);
+    case "/api/v1/artist":
+      return jsonResponse([{ id: 1, artistName: "Test Artist" }]);
+    case "/api/v1/album":
+      return jsonResponse([{ id: 1, title: "Test Album" }]);
+    case "/api/v1/indexer":
+      return jsonResponse([{ id: 1, name: "Test Indexer", enable: true, protocol: "torrent", priority: 25, tags: [] }]);
+    case "/api/v1/indexerstatus":
+      return jsonResponse([]);
+    case "/api/v1/diskspace":
+    case "/api/v3/diskspace":
+      return jsonResponse([{ path: "/media", label: "Media", freeSpace: 500_000_000, totalSpace: 1_000_000_000 }]);
+    case "/api/v1/wanted/missing":
+    case "/api/v3/wanted/missing":
+      return jsonResponse({ totalRecords: missingRecords.length, records: missingRecords });
+    case "/api/v1/queue":
     case "/api/v3/queue":
       return jsonResponse({ totalRecords: queueRecords.length, records: queueRecords });
+    case "/api/v1/history":
     case "/api/v3/history":
       return jsonResponse({ totalRecords: historyRecords.length, records: historyRecords });
     default:
@@ -140,7 +228,9 @@ async function callToolJson(client: Client, name: string, args: Record<string, u
   const text = result.content.find((entry) => entry.type === "text")?.text;
   assert.equal(result.isError, undefined, text);
   assert.ok(text, `expected text content from ${name}`);
-  return JSON.parse(text);
+  const parsed = JSON.parse(text);
+  assertServerNeutralContract(parsed, name);
+  return parsed;
 }
 
 async function callToolError(client: Client, name: string, args: Record<string, unknown> = {}) {
@@ -156,10 +246,51 @@ function fieldById(result: any, id: string) {
   return field;
 }
 
+const platformSpecificKeys = new Set([
+  "callbackData",
+  "callbackDataKind",
+  "channelData",
+  "components",
+  "messageId",
+  "modal",
+]);
+
+function assertServerNeutralContract(value: unknown, path = "result") {
+  if (!value || typeof value !== "object") {
+    if (typeof value === "string") {
+      assert.equal(value.startsWith("media-panel:"), false, `${path} must not contain panel callback state`);
+    }
+    return;
+  }
+
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertServerNeutralContract(entry, `${path}[${index}]`));
+    return;
+  }
+
+  for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+    assert.equal(platformSpecificKeys.has(key), false, `${path}.${key} is client/platform-specific`);
+    assertServerNeutralContract(entry, `${path}.${key}`);
+  }
+}
+
+function assertSummaryEnvelope(result: any, title: string) {
+  assert.equal(typeof result.summary, "string", `${title} summary`);
+  assert.match(result.checkedAt, /^\d{4}-\d{2}-\d{2}T/, `${title} checkedAt`);
+  assert.ok(Array.isArray(result.warnings), `${title} warnings`);
+  assert.ok(Array.isArray(result.errors), `${title} errors`);
+  assert.equal(result.view.schema, "media-mcp.view.v1", `${title} view schema`);
+  assert.equal(typeof result.view.title, "string", `${title} view title`);
+  assert.equal(typeof result.view.summary, "string", `${title} view summary`);
+  assert.ok(Array.isArray(result.view.cards), `${title} view cards`);
+  assertServerNeutralContract(result, title);
+}
+
 describe("Radarr request draft contract", () => {
   it("returns generic formFields for movie search options", async () => {
     const result = await media.searchMovie("test movie", 10) as any;
 
+    assertServerNeutralContract(result);
     assert.equal(result.requestDraft.schema, "media-mcp.requestDraft.v1");
     assert.equal(result.requestDraft.kind, "movie");
     assert.equal(result.requestDraft.service, "radarr");
@@ -195,6 +326,7 @@ describe("Radarr request draft contract", () => {
       tagIds: [7],
     }) as any;
 
+    assertServerNeutralContract(result);
     assert.equal(result.requestDraft.selectedCandidate.tmdbId, 123);
     assert.equal(result.requestDraft.defaults.qualityProfileId, 2);
     assert.equal(result.requestDraft.defaults.rootFolderPath, "/movies-4k");
@@ -219,6 +351,7 @@ describe("Radarr request draft contract", () => {
       searchNow: true,
     }) as any;
 
+    assertServerNeutralContract(result);
     const action = result.view.cards[0].actions[0];
     assert.equal(action.id, "request-movie");
     assert.equal(action.disabled, true);
@@ -305,6 +438,207 @@ describe("MCP-only request workflows", () => {
   });
 });
 
+describe("TV/movie lifecycle controls", () => {
+  it("updates existing movie monitoring and optionally starts a Radarr search", async () => {
+    existingMovies = [{ id: 999, ...movie, monitored: false }];
+    process.env.ALLOW_REQUESTS = "true";
+
+    await withMcpClient(async (client) => {
+      const result = await callToolJson(client, "set_movie_monitoring", {
+        tmdbId: 123,
+        monitored: true,
+        searchNow: true,
+      });
+
+      assert.equal(result.lifecycle.schema, "media-mcp.lifecycle.v1");
+      assert.equal(result.lifecycle.service, "radarr");
+      assert.equal(result.lifecycle.mediaType, "movie");
+      assert.equal(result.lifecycle.monitored, true);
+      assert.equal(result.lifecycle.searchStarted, true);
+      assert.equal(result.lifecycle.commandId, 777);
+      assert.equal(result.view.schema, "media-mcp.view.v1");
+      assert.equal(result.view.state.kind, "success");
+
+      const update = fetchCalls.find((call) => call.method === "PUT" && call.path === "/api/v3/movie/999");
+      assert.ok(update);
+      assert.equal((update.body as any).monitored, true);
+
+      const command = fetchCalls.find((call) => call.method === "POST" && call.path === "/api/v3/command");
+      assert.deepEqual(command?.body, { name: "MoviesSearch", movieIds: [999] });
+    });
+  });
+
+  it("updates exactly one existing Sonarr season without changing neighboring seasons", async () => {
+    existingSeries = [{
+      id: 555,
+      ...series,
+      seasons: [
+        { seasonNumber: 1, monitored: false, statistics: { episodeCount: 3 } },
+        { seasonNumber: 2, monitored: false, statistics: { episodeCount: 2 } },
+        { seasonNumber: 3, monitored: true, statistics: { episodeCount: 4 } },
+      ],
+    }];
+    process.env.ALLOW_REQUESTS = "true";
+
+    await withMcpClient(async (client) => {
+      const result = await callToolJson(client, "set_series_season_monitoring", {
+        tvdbId: 321,
+        seasonNumber: 2,
+        monitored: true,
+        searchNow: true,
+      });
+
+      assert.equal(result.lifecycle.schema, "media-mcp.lifecycle.v1");
+      assert.equal(result.lifecycle.service, "sonarr");
+      assert.equal(result.lifecycle.scope, "season");
+      assert.equal(result.lifecycle.target.seasonNumber, 2);
+      assert.equal(result.lifecycle.monitored, true);
+      assert.equal(result.lifecycle.searchStarted, true);
+      assert.equal(result.lifecycle.expectedEpisodeCount, 2);
+      assert.equal(result.season.expectedEpisodeCount, 2);
+      assert.equal(result.view.state.kind, "success");
+
+      const update = fetchCalls.find((call) => call.method === "PUT" && call.path === "/api/v3/series/555");
+      assert.ok(update);
+      const updatedSeasons = (update.body as any).seasons;
+      assert.deepEqual(updatedSeasons.map((season: any) => [season.seasonNumber, season.monitored]), [
+        [1, false],
+        [2, true],
+        [3, true],
+      ]);
+
+      const command = fetchCalls.find((call) => call.method === "POST" && call.path === "/api/v3/command");
+      assert.deepEqual(command?.body, { name: "SeasonSearch", seriesId: 555, seasonNumber: 2 });
+    });
+  });
+
+  it("requests a missing Sonarr series with only the requested season monitored", async () => {
+    process.env.ALLOW_REQUESTS = "true";
+
+    await withMcpClient(async (client) => {
+      const result = await callToolJson(client, "request_series_season", {
+        tvdbId: 321,
+        seasonNumber: 2,
+        qualityProfileId: 1,
+        rootFolderPath: "/movies",
+        monitored: true,
+        searchNow: true,
+      });
+
+      assert.equal(result.lifecycle.service, "sonarr");
+      assert.equal(result.lifecycle.target.seasonNumber, 2);
+      assert.equal(result.lifecycle.searchStarted, true);
+      assert.equal(result.expectedEpisodeCount, 2);
+      assert.equal(result.view.state.kind, "success");
+
+      const add = fetchCalls.find((call) => call.method === "POST" && call.path === "/api/v3/series");
+      assert.ok(add);
+      const addedSeasons = (add.body as any).seasons;
+      assert.deepEqual(addedSeasons.map((season: any) => [season.seasonNumber, season.monitored]), [
+        [1, false],
+        [2, true],
+        [3, false],
+      ]);
+      assert.equal((add.body as any).addOptions.monitor, "none");
+      assert.equal((add.body as any).addOptions.searchForMissingEpisodes, false);
+
+      const command = fetchCalls.find((call) => call.method === "POST" && call.path === "/api/v3/command");
+      assert.deepEqual(command?.body, { name: "SeasonSearch", seriesId: 888, seasonNumber: 2 });
+    });
+  });
+
+  it("routes request_series_season through existing series lifecycle instead of adding duplicates", async () => {
+    existingSeries = [{ id: 555, ...series }];
+    process.env.ALLOW_REQUESTS = "true";
+
+    await withMcpClient(async (client) => {
+      const result = await callToolJson(client, "request_series_season", {
+        tvdbId: 321,
+        seasonNumber: 2,
+        qualityProfileId: 1,
+        rootFolderPath: "/movies",
+        searchNow: false,
+      });
+
+      assert.equal(result.lifecycle.target.seriesId, 555);
+      assert.equal(fetchCalls.some((call) => call.method === "POST" && call.path === "/api/v3/series"), false);
+      assert.equal(fetchCalls.some((call) => call.method === "PUT" && call.path === "/api/v3/series/555"), true);
+    });
+  });
+});
+
+describe("Dashboard contract hardening", () => {
+  it("returns neutral envelopes for core dashboard tools", async () => {
+    queueRecords = [
+      {
+        title: "Test Movie.2026.1080p.WEB-DL",
+        status: "downloading",
+        size: 1000,
+        sizeleft: 500,
+      },
+    ];
+    missingRecords = [
+      {
+        movie: { title: "Missing Movie" },
+        title: "Missing Episode",
+        airDateUtc: "2026-07-01T00:00:00Z",
+        monitored: true,
+      },
+    ];
+
+    const status = await media.serviceStatus() as any;
+    assertSummaryEnvelope(status, "serviceStatus");
+    assert.equal(status.view.state.kind, "partial_failure");
+    assert.ok(status.missing.length > 0);
+    assert.ok(status.services.some((service: any) => service.service === "sabnzbd"));
+
+    const health = await media.serviceHealth() as any;
+    assertSummaryEnvelope(health, "serviceHealth");
+    assert.equal(health.view.state.kind, "success");
+
+    const queue = await media.downloadQueue(undefined, 10) as any;
+    assertSummaryEnvelope(queue, "downloadQueue");
+    assert.equal(queue.view.state.kind, "success");
+    assert.ok(queue.services.reduce((sum: number, service: any) => sum + Number(service.total ?? 0), 0) > 0);
+
+    const missing = await media.missingSummary(5) as any;
+    assertSummaryEnvelope(missing, "missingSummary");
+    assert.equal(missing.view.state.kind, "success");
+    assert.ok(missing.services.every((service: any) => typeof service.total === "number"));
+
+    const issues = await media.importIssues(10) as any;
+    assertSummaryEnvelope(issues, "importIssues");
+    assert.ok(["success", "empty"].includes(issues.view.state.kind));
+  });
+
+  it("marks dashboard views as partial failures when downstream services fail", async () => {
+    queueRecords = [
+      {
+        title: "Blocked Download",
+        status: "warning",
+        trackedDownloadStatus: "warning",
+        statusMessages: [{ title: "Import blocked", messages: ["No writable path"] }],
+      },
+    ];
+    failedRequests.add("lidarr.test/api/v1/queue");
+
+    const queue = await media.downloadQueue(undefined, 10) as any;
+    assertSummaryEnvelope(queue, "downloadQueue partial");
+    assert.equal(queue.view.state.kind, "partial_failure");
+    assert.ok(queue.warnings.some((warning: string) => warning.startsWith("lidarr:")));
+  });
+
+  it("keeps composed media stack overview client-neutral", async () => {
+    const overview = await media.mediaStackOverview() as any;
+
+    assertSummaryEnvelope(overview, "mediaStackOverview");
+    assert.ok(["success", "partial_failure", "empty"].includes(overview.view.state.kind));
+    assert.ok(overview.view.cards.some((card: any) => card.id === "services"));
+    assert.ok(overview.view.cards.some((card: any) => card.id === "activity"));
+    assert.equal(overview.safety.requestToolsEnabled, false);
+  });
+});
+
 describe("Request follow status", () => {
   it("aggregates multiple Sonarr episode queue items", async () => {
     queueRecords = [
@@ -331,6 +665,13 @@ describe("Request follow status", () => {
     }) as any;
 
     assert.equal(result.followStatus.label, "Downloading");
+    assert.equal(result.followStatus.schema, "media-mcp.followStatus.v1");
+    assert.equal(result.followStatus.phase, "downloading");
+    assert.equal(result.followStatus.terminal, false);
+    assert.equal(result.followStatus.activeCount, 2);
+    assert.equal(result.followStatus.expectedEpisodeCount, 2);
+    assert.equal(result.followStatus.nextPollRecommended, true);
+    assert.equal(result.followStatus.pollDelaySeconds, 20);
     assert.equal(result.followStatus.progress, 40);
     assert.match(result.followStatus.episodeDetail, /Queue: 2 episodes/);
     assert.match(result.followStatus.episodeDetail, /Imported: 0\/2/);
@@ -360,9 +701,98 @@ describe("Request follow status", () => {
 
     assert.equal(result.followStatus.complete, true);
     assert.equal(result.followStatus.label, "Imported");
+    assert.equal(result.followStatus.phase, "imported");
+    assert.equal(result.followStatus.terminal, true);
+    assert.equal(result.followStatus.nextPollRecommended, false);
+    assert.equal(result.followStatus.importedCount, 2);
     assert.match(result.followStatus.episodeDetail, /Imported: 2\/2/);
     assert.equal(result.history.imported, 2);
     assert.equal(result.view.state.kind, "success");
+  });
+
+  it("reports partial Sonarr imports as importing and keeps polling", async () => {
+    historyRecords = [
+      {
+        sourceTitle: "Sugar.2024.S02E01.Home.Away.from.Home.2160p.WEB-DL",
+        eventType: "downloadFolderImported",
+        date: "2026-06-27T07:44:20Z",
+      },
+    ];
+
+    const result = await media.requestFollowStatus({
+      service: "sonarr",
+      title: "Sugar",
+      expectedEpisodeCount: 2,
+    }) as any;
+
+    assert.equal(result.followStatus.phase, "importing");
+    assert.equal(result.followStatus.complete, false);
+    assert.equal(result.followStatus.terminal, false);
+    assert.equal(result.followStatus.importedCount, 1);
+    assert.equal(result.followStatus.expectedEpisodeCount, 2);
+    assert.equal(result.followStatus.nextPollRecommended, true);
+    assert.equal(result.view.state.kind, "loading");
+  });
+
+  it("reports grabbed movie requests as non-terminal follow states", async () => {
+    historyRecords = [
+      {
+        sourceTitle: "Test Movie.2026.1080p.WEB-DL",
+        eventType: "grabbed",
+        date: "2026-06-29T07:00:00Z",
+      },
+    ];
+
+    const result = await media.requestFollowStatus({
+      service: "radarr",
+      title: "Test Movie",
+      tmdbId: 123,
+      polls: 2,
+    }) as any;
+
+    assert.equal(result.followStatus.phase, "grabbed");
+    assert.equal(result.followStatus.mediaType, "movie");
+    assert.equal(result.followStatus.terminal, false);
+    assert.equal(result.followStatus.nextPollRecommended, true);
+    assert.equal(result.followStatus.pollDelaySeconds, 15);
+    assert.equal(result.view.state.kind, "loading");
+  });
+
+  it("reports unresolved failed movie requests as terminal errors", async () => {
+    historyRecords = [
+      {
+        sourceTitle: "Test Movie.2026.1080p.WEB-DL",
+        eventType: "downloadFailed",
+        date: "2026-06-29T07:00:00Z",
+      },
+    ];
+
+    const result = await media.requestFollowStatus({
+      service: "radarr",
+      title: "Test Movie",
+      tmdbId: 123,
+    }) as any;
+
+    assert.equal(result.followStatus.phase, "failed");
+    assert.equal(result.followStatus.failed, true);
+    assert.equal(result.followStatus.terminal, true);
+    assert.equal(result.followStatus.nextPollRecommended, false);
+    assert.equal(result.view.state.kind, "error");
+  });
+
+  it("reports untouched requests as requested with timed polling hints", async () => {
+    const result = await media.requestFollowStatus({
+      service: "radarr",
+      title: "Test Movie",
+      tmdbId: 123,
+      polls: 4,
+    }) as any;
+
+    assert.equal(result.followStatus.phase, "requested");
+    assert.equal(result.followStatus.terminal, false);
+    assert.equal(result.followStatus.nextPollRecommended, true);
+    assert.equal(result.followStatus.pollDelaySeconds, 25);
+    assert.equal(result.view.state.kind, "loading");
   });
 });
 
@@ -370,6 +800,7 @@ describe("Sonarr request draft contract", () => {
   it("returns generic formFields for series search options", async () => {
     const result = await media.searchSeries("test series", 10) as any;
 
+    assertServerNeutralContract(result);
     assert.equal(result.requestDraft.schema, "media-mcp.requestDraft.v1");
     assert.equal(result.requestDraft.kind, "series");
     assert.equal(result.requestDraft.service, "sonarr");
@@ -409,6 +840,7 @@ describe("Sonarr request draft contract", () => {
       tagIds: [7],
     }) as any;
 
+    assertServerNeutralContract(result);
     assert.equal(result.requestDraft.selectedCandidate.tvdbId, 321);
     assert.equal(result.requestDraft.defaults.qualityProfileId, 2);
     assert.equal(result.requestDraft.defaults.rootFolderPath, "/movies-4k");
@@ -437,6 +869,7 @@ describe("Sonarr request draft contract", () => {
       searchNow: true,
     }) as any;
 
+    assertServerNeutralContract(result);
     const action = result.view.cards[0].actions[0];
     assert.equal(action.id, "request-series");
     assert.equal(action.disabled, true);

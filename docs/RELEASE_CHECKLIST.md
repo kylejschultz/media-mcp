@@ -27,11 +27,14 @@ MEDIA_MCP_SMOKE_URL=http://localhost:3000/mcp npm run smoke:http
 Suggested boundary search:
 
 ```bash
-rg -n "DiscordComponent|callbackData|callbackDataKind|media-panel:|components:" src test README.md
+rg -n "DiscordComponent|callbackData|callbackDataKind|media-panel:|components:" src README.md
 ```
 
 Expected result: no matches except historical docs that explicitly describe a
 removed experiment.
+
+The request-flow tests also run recursive contract assertions against MCP tool
+results so platform-specific keys fail fast during `npm test`.
 
 ## Deployment Notes
 

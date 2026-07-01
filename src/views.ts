@@ -90,7 +90,7 @@ export type ViewCard = {
   actions?: ViewAction[];
 };
 
-export type ComponentView = {
+export type MediaView = {
   schema: "media-mcp.view.v1";
   title: string;
   summary: string;
@@ -98,7 +98,7 @@ export type ComponentView = {
   cards: ViewCard[];
 };
 
-export function componentView(title: string, summary: string, cards: ViewCard[]): ComponentView {
+export function mediaView(title: string, summary: string, cards: ViewCard[]): MediaView {
   return { schema: "media-mcp.view.v1", title, summary, cards };
 }
 
@@ -156,7 +156,7 @@ export function viewState(args: {
   };
 }
 
-export function withViewState(view: ComponentView, state: ViewState): ComponentView {
+export function withViewState(view: MediaView, state: ViewState): MediaView {
   return { ...view, state };
 }
 

@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import { arrGet, arrPost, beetsGet, jellyfinGet, sabGet, slskdGet } from "./http.js";
+import { arrGet, arrPost, arrPut, beetsGet, jellyfinGet, sabGet, slskdGet } from "./http.js";
 import type { AnyRecord } from "./types.js";
 
 export async function arrHealth(app: AppConfig) {
@@ -34,6 +34,14 @@ export async function radarrAddMovie(app: AppConfig, body: unknown) {
   return arrPost<AnyRecord>(app, "movie", body);
 }
 
+export async function radarrUpdateMovie(app: AppConfig, id: number, body: unknown) {
+  return arrPut<AnyRecord>(app, `movie/${id}`, body);
+}
+
+export async function arrCommand(app: AppConfig, body: unknown) {
+  return arrPost<AnyRecord>(app, "command", body);
+}
+
 export async function sonarrSeries(app: AppConfig) {
   return arrGet<AnyRecord[]>(app, "series");
 }
@@ -44,6 +52,10 @@ export async function sonarrSeriesLookup(app: AppConfig, term: string) {
 
 export async function sonarrAddSeries(app: AppConfig, body: unknown) {
   return arrPost<AnyRecord>(app, "series", body);
+}
+
+export async function sonarrUpdateSeries(app: AppConfig, id: number, body: unknown) {
+  return arrPut<AnyRecord>(app, `series/${id}`, body);
 }
 
 export async function sabVersion(app: AppConfig) {

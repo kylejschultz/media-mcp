@@ -26,8 +26,11 @@ import {
   requestFollowStatus,
   requestMovie,
   requestSeries,
+  requestSeriesSeason,
   searchMovie,
   searchSeries,
+  setMovieMonitoring,
+  setSeriesSeasonMonitoring,
   serviceHealth,
   serviceStatus,
   sonarrRequestOptions,
@@ -51,6 +54,11 @@ const movieRequestInput = {
   searchNow: z.boolean().default(true),
   tagIds: z.array(z.number().int().positive()).default([]),
 };
+const movieMonitoringInput = {
+  tmdbId: z.number().int().positive(),
+  monitored: z.boolean().default(true),
+  searchNow: z.boolean().default(false),
+};
 const seriesRequestInput = {
   tvdbId: z.number().int().positive(),
   qualityProfileId: z.number().int().positive(),
@@ -59,6 +67,17 @@ const seriesRequestInput = {
   seasonFolder: z.boolean().default(true),
   searchNow: z.boolean().default(true),
   tagIds: z.array(z.number().int().positive()).default([]),
+};
+const seriesSeasonMonitoringInput = {
+  tvdbId: z.number().int().positive(),
+  seasonNumber: z.number().int().min(0),
+  monitored: z.boolean().default(true),
+  searchNow: z.boolean().default(false),
+};
+const seriesSeasonRequestInput = {
+  ...seriesRequestInput,
+  seasonNumber: z.number().int().min(0),
+  monitored: z.boolean().default(true),
 };
 const requestFollowInput = {
   service: z.enum(["sonarr", "radarr"]),
@@ -364,6 +383,16 @@ export function createMediaMcpServer() {
   );
 
   server.registerTool(
+    "set_movie_monitoring",
+    {
+      title: "Set Movie Monitoring",
+      description: "Update monitoring for an existing Radarr movie and optionally start a movie search. Requires ALLOW_REQUESTS=true.",
+      inputSchema: movieMonitoringInput,
+    },
+    tool((args) => setMovieMonitoring(args)),
+  );
+
+  server.registerTool(
     "sonarr_request_options",
     {
       title: "Sonarr Request Options",
@@ -403,6 +432,26 @@ export function createMediaMcpServer() {
       inputSchema: seriesRequestInput,
     },
     tool((args) => requestSeries(args)),
+  );
+
+  server.registerTool(
+    "set_series_season_monitoring",
+    {
+      title: "Set Series Season Monitoring",
+      description: "Update monitoring for exactly one existing Sonarr season and optionally start a season search. Requires ALLOW_REQUESTS=true.",
+      inputSchema: seriesSeasonMonitoringInput,
+    },
+    tool((args) => setSeriesSeasonMonitoring(args)),
+  );
+
+  server.registerTool(
+    "request_series_season",
+    {
+      title: "Request Series Season",
+      description: "Add or update a Sonarr series for one specific season only, then optionally start a season search. Requires ALLOW_REQUESTS=true.",
+      inputSchema: seriesSeasonRequestInput,
+    },
+    tool((args) => requestSeriesSeason(args)),
   );
 
   server.registerTool(

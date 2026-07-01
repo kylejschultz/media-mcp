@@ -40,6 +40,26 @@ Most high-level tools return these fields:
 Clients should treat raw tool-specific data as authoritative. `view` is
 additive.
 
+Dashboard/status tools should keep this envelope stable even when one
+downstream service fails. In that case, the tool should return whatever data it
+can, put non-fatal service errors in `warnings`, and set `view.state.kind` to
+`partial_failure`.
+
+Empty but successful tools should use `view.state.kind = "empty"` with a useful
+empty label. Successful tools with renderable data should use `success`.
+
+## Tool Families
+
+- Status and health tools return `services[]` plus the common envelope.
+- Queue tools return `services[]`, per-service `items[]`, and warnings for
+  failed downstream queue lookups.
+- Missing media tools return `services[]` with per-service `total` and sample
+  items.
+- Import issue tools return `queueIssues`, `failedHistory`,
+  `resolvedFailedHistory`, and the common envelope.
+- Overview tools compose the lower-level contracts and should stay
+  client-neutral; they must not require a Discord panel to interpret the result.
+
 ## `media-mcp.view.v1`
 
 `view` groups result data for clients that want card-like rendering without
@@ -102,6 +122,13 @@ Core movie flow:
 4. `request_movie` only when the user confirms and `writeGate.enabled` is true
 5. `request_follow_status`
 
+Existing movie monitoring flow:
+
+1. resolve an existing movie by `tmdbId`
+2. `set_movie_monitoring` with `monitored` and optional `searchNow`
+3. use the returned `lifecycle` envelope and optionally poll
+   `request_follow_status`
+
 Core series flow:
 
 1. `search_series`
@@ -110,8 +137,69 @@ Core series flow:
 4. `request_series` only when the user confirms and `writeGate.enabled` is true
 5. `request_follow_status`
 
+Specific season flow:
+
+1. resolve a series by `tvdbId`
+2. use `set_series_season_monitoring` for an existing series, or
+   `request_series_season` when the series may need to be added
+3. pass `seasonNumber`, `monitored`, and optional `searchNow`
+4. use returned `expectedEpisodeCount` with `request_follow_status`
+
+Specific season writes are scoped. Updating or requesting season `N` must not
+change monitoring on other existing seasons. When `request_series_season` adds a
+missing series, only the requested season is monitored.
+
 When writes are disabled, preview tools still return `payloadPreview` so clients
 can present a dry-run result.
+
+## `media-mcp.lifecycle.v1`
+
+Lifecycle tools return a `lifecycle` object for write-side state changes that do
+not fit the preview request draft model.
+
+Common fields:
+
+- `schema`: always `media-mcp.lifecycle.v1`.
+- `service`: `radarr` or `sonarr`.
+- `mediaType`: `movie` or `series`.
+- `action`: stable action name such as `set_monitoring` or
+  `set_season_monitoring`.
+- `target`: identifiers and display title for the movie, series, or season.
+- `monitored`: final monitored state requested by the caller.
+- `searchStarted`: whether the tool posted an Arr search command.
+- `expectedEpisodeCount`: present when a season target has usable episode stats.
+
+## `media-mcp.followStatus.v1`
+
+`request_follow_status` returns a `followStatus` object for polling a requested
+movie or series after the write tool returns.
+
+Stable follow phases:
+
+- `requested`: request was accepted, but no queue/history activity is visible.
+- `grabbed`: Arr history shows the release was grabbed.
+- `queued`: the item is active in the Arr queue.
+- `downloading`: the item is active in SABnzbd or multiple Sonarr episode
+  downloads are active.
+- `importing`: download/history activity exists, but expected imports are not
+  complete yet.
+- `imported`: import completed.
+- `failed`: unresolved failure found.
+
+Common fields:
+
+- `schema`: always `media-mcp.followStatus.v1`.
+- `phase`: one of the stable phases above.
+- `service`: `radarr` or `sonarr`.
+- `mediaType`: `movie` or `series`.
+- `title`: display title used for tracking.
+- `complete`, `failed`, and `terminal`: booleans for client control flow.
+- `expectedEpisodeCount`, `activeCount`, and `importedCount`: count hints,
+  especially useful for Sonarr multi-episode requests.
+- `queueCount` and `historyCount`: source counts split by Arr service and
+  SABnzbd.
+- `nextPollRecommended`: false for terminal phases.
+- `pollDelaySeconds`: additive polling hint for clients that want backoff.
 
 ## Contract Tests
 
