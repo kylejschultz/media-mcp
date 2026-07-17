@@ -1,6 +1,6 @@
 # media-mcp
 
-MCP server for the media stack: Sonarr, Radarr, Lidarr, Prowlarr, SABnzbd, and Jellyfin.
+MCP server for the media stack: Sonarr, Radarr, Lidarr, Prowlarr, SABnzbd, Jellyfin, beets-flask, slskd, Navidrome, and Subwave.
 
 The server is intentionally env-driven so API keys stay out of git.
 
@@ -12,7 +12,9 @@ cp .env.example .env
 npm run build
 ```
 
-Fill in the `*_URL` and `*_API_KEY` values in `.env` for local development.
+Fill in the `*_URL`, `*_API_KEY`, and service credential values in `.env` for local development.
+Navidrome uses a dedicated Subsonic user via `NAVIDROME_USER` and `NAVIDROME_PASS`.
+Subwave public reads need only `SUBWAVE_URL`; admin-read endpoints use `SUBWAVE_ADMIN_USER` and `SUBWAVE_ADMIN_PASS`.
 
 If you run this alongside the existing media containers, use Docker so the MCP server can join `docker-network` and resolve `sonarr`, `radarr`, and `sabnzbd` by container name:
 
@@ -245,6 +247,15 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `media_wanted_missing` - list normalized missing wanted items for Sonarr/Radarr/Lidarr.
 - `beets_flask_status` - show read-only beets-flask queue, worker, inbox, and library status.
 - `slskd_status` - show read-only slskd Soulseek connection, transfer, and share status.
+- `navidrome_status` - show read-only Navidrome Subsonic reachability, scan, and music-folder status.
+- `navidrome_search` - search Navidrome artists, albums, and songs through Subsonic `search3`.
+- `navidrome_scan_status` - show Navidrome scan state, counts, and last scan time.
+- `subwave_status` - show read-only Subwave station health, now-playing, queue, and admin-read availability.
+- `subwave_now_playing` - show current Subwave track, station context, DJ persona, listeners, and stream descriptor.
+- `subwave_state` - show Subwave current queue, recent history, DJ log, and station state.
+- `subwave_streams` - show Subwave stream descriptor plus PLS/M3U tune-in files.
+- `subwave_search` - search Subwave's admin library endpoint for queue-ready tracks.
+- `subwave_recent` - show recently added Subwave tracks and playlist summary.
 - `jellyfin_system_info` - show Jellyfin server version and basic system information.
 - `jellyfin_library_counts` - show Jellyfin media item counts.
 - `jellyfin_active_sessions` - show active Jellyfin sessions and playback summary.
@@ -256,8 +267,12 @@ additive; clients can ignore it and consume the raw result fields instead.
 SABnzbd has a different API shape from the Arr apps, so its queue/history tools normalize the output separately.
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
 beets-flask support is read-only and uses `BEETS_FLASK_URL`. slskd support is read-only and uses `SLSKD_URL` plus `SLSKD_API_KEY`.
+Navidrome support is read-only in the current release and uses `NAVIDROME_URL`, `NAVIDROME_USER`, and `NAVIDROME_PASS` against the Subsonic API.
+Subwave public station reads use `SUBWAVE_URL`. Admin-read tools such as `subwave_search` and `subwave_recent` also require `SUBWAVE_ADMIN_USER` and `SUBWAVE_ADMIN_PASS`.
 The default runtime is read-only. Search and preview tools are safe by default;
 request/write tools refuse to run unless `ALLOW_REQUESTS=true`.
+Future service-specific write tools must stay behind explicit gates such as
+`ALLOW_WRITE_NAVIDROME`, `ALLOW_WRITE_SUBWAVE`, and `ALLOW_WRITE_BEETS_FLASK`.
 The generated stack model is used to interpret expected stack-specific warnings,
 such as Lidarr Completed Download Handling being disabled while beets-flask owns
 music import/tagging.

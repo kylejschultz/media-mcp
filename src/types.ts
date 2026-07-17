@@ -6,6 +6,7 @@ export type ArrAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr" | "prow
 export type LibraryAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr">;
 export type QueueAppName = Extract<AppName, "sonarr" | "radarr" | "lidarr" | "sabnzbd">;
 export type JellyfinAppName = Extract<AppName, "jellyfin">;
+export type MusicServiceAppName = Extract<AppName, "navidrome" | "subwave">;
 
 export const libraryApps: LibraryAppName[] = ["sonarr", "radarr", "lidarr"];
 export const queueApps: QueueAppName[] = ["sonarr", "radarr", "lidarr", "sabnzbd"];

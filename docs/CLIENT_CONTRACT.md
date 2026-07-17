@@ -7,7 +7,7 @@ the client.
 ## Server Responsibilities
 
 - Durable media operations across Sonarr, Radarr, Lidarr, Prowlarr, SABnzbd,
-  Jellyfin, beets-flask, and slskd.
+  Jellyfin, beets-flask, slskd, Navidrome, and Subwave.
 - Normalized service contracts for status, health, queues, history, missing
   media, import issues, indexers, library counts, disk space, and searches.
 - Request flows for search, options, preview, gated writes, and follow-up
@@ -53,6 +53,10 @@ empty label. Successful tools with renderable data should use `success`.
 - Status and health tools return `services[]` plus the common envelope.
 - Queue tools return `services[]`, per-service `items[]`, and warnings for
   failed downstream queue lookups.
+- Navidrome tools use the Subsonic API and return normalized search, scan, and
+  library visibility data without exposing credentials.
+- Subwave tools return live station state, now-playing, streams, queue/history,
+  and admin-read search/recent data when admin credentials are configured.
 - Missing media tools return `services[]` with per-service `total` and sample
   items.
 - Import issue tools return `queueIssues`, `failedHistory`,

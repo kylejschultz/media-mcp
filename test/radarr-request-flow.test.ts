@@ -13,6 +13,12 @@ process.env.PROWLARR_URL = "http://prowlarr.test";
 process.env.PROWLARR_API_KEY = "test-api-key";
 process.env.SABNZBD_URL = "http://sabnzbd.test";
 process.env.SABNZBD_API_KEY = "test-api-key";
+process.env.NAVIDROME_URL = "http://navidrome.test";
+process.env.NAVIDROME_USER = "test-user";
+process.env.NAVIDROME_PASS = "test-pass";
+process.env.SUBWAVE_URL = "http://subwave.test";
+process.env.SUBWAVE_ADMIN_USER = "test-admin";
+process.env.SUBWAVE_ADMIN_PASS = "test-pass";
 process.env.ALLOW_REQUESTS = "";
 
 type FetchCall = {
@@ -148,6 +154,95 @@ globalThis.fetch = async (input, init) => {
         });
       default:
         return jsonResponse({ error: `Unhandled SAB mode: ${sabMode}` }, 404);
+    }
+  }
+
+  if (url.host === "navidrome.test") {
+    switch (url.pathname) {
+      case "/rest/ping.view":
+        return jsonResponse({ "subsonic-response": { status: "ok", version: "1.16.1" } });
+      case "/rest/getScanStatus.view":
+        return jsonResponse({
+          "subsonic-response": {
+            status: "ok",
+            version: "1.16.1",
+            scanStatus: {
+              scanning: false,
+              count: 2968,
+              folderCount: 232,
+              lastScan: "2026-07-17T05:30:53.619Z",
+              scanType: "quick",
+            },
+          },
+        });
+      case "/rest/getMusicFolders.view":
+        return jsonResponse({
+          "subsonic-response": {
+            status: "ok",
+            version: "1.16.1",
+            musicFolders: { musicFolder: [{ id: "1", name: "Music" }] },
+          },
+        });
+      case "/rest/search3.view":
+        return jsonResponse({
+          "subsonic-response": {
+            status: "ok",
+            version: "1.16.1",
+            searchResult3: {
+              artist: [{ id: "artist-1", name: "Test Artist", albumCount: 2 }],
+              album: [{ id: "album-1", name: "Test Album", artist: "Test Artist", songCount: 10, year: 2026 }],
+              song: [{ id: "song-1", title: "Test Song", artist: "Test Artist", album: "Test Album", duration: 180 }],
+            },
+          },
+        });
+      default:
+        return jsonResponse({ error: `Unhandled Navidrome test URL: ${url}` }, 404);
+    }
+  }
+
+  if (url.host === "subwave.test") {
+    switch (url.pathname) {
+      case "/api/health":
+        return jsonResponse({ status: "on-air" });
+      case "/api/now-playing":
+        return jsonResponse({
+          nowPlaying: {
+            title: "Midnight City",
+            artist: "M83",
+            album: "Hurry Up, We're Dreaming",
+            subsonic_id: "a1b2c3",
+            genre: "Synthpop",
+            duration: 244,
+          },
+          context: { dominantMood: "nocturnal" },
+          dj: { name: "Frequency", tagline: "after-dark selector", station: "SUB/WAVE" },
+          activeShow: null,
+          listeners: 3,
+          streamOnline: true,
+          stream: { mount: "/stream.mp3", format: "mp3", bitrate: 128 },
+        });
+      case "/api/state":
+        return jsonResponse({
+          current: { title: "Midnight City", artist: "M83", source: "auto", startedAt: "2026-07-17T05:50:00.000Z" },
+          upcoming: [{ title: "Open Eye Signal", artist: "Jon Hopkins", requestedBy: "auto" }],
+          history: [{ title: "Nightcall", artist: "Kavinsky", endedAt: "2026-07-17T05:49:00.000Z" }],
+          djLog: [{ t: "2026-07-17T05:50:00.000Z", kind: "pick", text: "picked Open Eye Signal" }],
+          timezone: "America/Los_Angeles",
+        });
+      case "/api/stats":
+        return jsonResponse({ llm: { provider: "test", calls: 1 }, requests: { total: 1, resolved: 1 } });
+      case "/api/dj/search":
+        return jsonResponse({ results: [{ id: "song-1", title: "Test Song", artist: "Test Artist", album: "Test Album" }] });
+      case "/api/dj/recent":
+        return jsonResponse({ results: [{ id: "song-2", title: "Recent Song", artist: "Test Artist", album: "Recent Album" }] });
+      case "/api/dj/playlists":
+        return jsonResponse({ results: [{ id: "pl-1", name: "Late Night", songCount: 42 }] });
+      case "/listen.pls":
+        return new Response("[playlist]\nNumberOfEntries=1\nFile1=http://subwave.test/stream.mp3\nTitle1=SUB/WAVE\n", { status: 200 });
+      case "/listen.m3u":
+        return new Response("#EXTM3U\n#EXTINF:-1,SUB/WAVE\nhttp://subwave.test/stream.mp3\n", { status: 200 });
+      default:
+        return jsonResponse({ error: `Unhandled Subwave test URL: ${url}` }, 404);
     }
   }
 
@@ -636,6 +731,29 @@ describe("Dashboard contract hardening", () => {
     assert.ok(overview.view.cards.some((card: any) => card.id === "services"));
     assert.ok(overview.view.cards.some((card: any) => card.id === "activity"));
     assert.equal(overview.safety.requestToolsEnabled, false);
+  });
+
+  it("returns neutral Navidrome and Subwave read contracts", async () => {
+    const navidrome = await media.navidromeStatus() as any;
+    assertSummaryEnvelope(navidrome, "navidromeStatus");
+    assert.equal(navidrome.ok, true);
+    assert.equal(navidrome.scanStatus.scanning, false);
+
+    const navidromeSearch = await media.navidromeSearch("test", 5) as any;
+    assertSummaryEnvelope(navidromeSearch, "navidromeSearch");
+    assert.equal(navidromeSearch.songs[0].title, "Test Song");
+
+    const subwave = await media.subwaveNowPlaying() as any;
+    assertSummaryEnvelope(subwave, "subwaveNowPlaying");
+    assert.equal(subwave.current.title, "Midnight City");
+
+    const streams = await media.subwaveStreams() as any;
+    assertSummaryEnvelope(streams, "subwaveStreams");
+    assert.equal(streams.stream.mount, "/stream.mp3");
+
+    const search = await media.subwaveSearchTracks("test", 5) as any;
+    assertSummaryEnvelope(search, "subwaveSearchTracks");
+    assert.equal(search.tracks[0].title, "Test Song");
   });
 });
 

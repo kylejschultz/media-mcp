@@ -18,6 +18,9 @@ import {
   mediaStackFlow,
   mediaStackModel,
   missingSummary,
+  navidromeScanStatus,
+  navidromeSearch,
+  navidromeStatus,
   prowlarrSearch,
   previewMovieRequest,
   previewSeriesRequest,
@@ -35,13 +38,19 @@ import {
   serviceStatus,
   sonarrRequestOptions,
   slskdStatus,
+  subwaveNowPlaying,
+  subwaveRecentTracks,
+  subwaveSearchTracks,
+  subwaveStateSummary,
+  subwaveStatus,
+  subwaveStreams,
   systemStatus,
   wantedMissingNormalized,
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
 import { serverVersion } from "./version.js";
 
-const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin", "beets-flask", "slskd"]);
+const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin", "beets-flask", "slskd", "navidrome", "subwave"]);
 const statusApp = appName;
 const libraryApp = z.enum(["sonarr", "radarr", "lidarr"]);
 const queueApp = z.enum(["sonarr", "radarr", "lidarr", "sabnzbd"]);
@@ -480,6 +489,101 @@ export function createMediaMcpServer() {
       description: "Return read-only slskd Soulseek connection, transfer, and share status.",
     },
     tool(() => slskdStatus()),
+  );
+
+  server.registerTool(
+    "navidrome_status",
+    {
+      title: "Navidrome Status",
+      description: "Return read-only Navidrome Subsonic reachability, scan, and accessible music folder status.",
+    },
+    tool(() => navidromeStatus()),
+  );
+
+  server.registerTool(
+    "navidrome_search",
+    {
+      title: "Navidrome Search",
+      description: "Search Navidrome through the Subsonic search3 API for artists, albums, and songs.",
+      inputSchema: {
+        query: z.string().min(1),
+        limit: z.number().int().min(1).max(25).default(12),
+      },
+    },
+    tool(({ query, limit }) => navidromeSearch(query, limit)),
+  );
+
+  server.registerTool(
+    "navidrome_scan_status",
+    {
+      title: "Navidrome Scan Status",
+      description: "Return Navidrome Subsonic scan state, last scan time, and folder/item counts.",
+    },
+    tool(() => navidromeScanStatus()),
+  );
+
+  server.registerTool(
+    "subwave_status",
+    {
+      title: "Subwave Status",
+      description: "Return read-only Subwave station health, now-playing, queue, and admin-read availability.",
+    },
+    tool(() => subwaveStatus()),
+  );
+
+  server.registerTool(
+    "subwave_now_playing",
+    {
+      title: "Subwave Now Playing",
+      description: "Return current Subwave track, station context, DJ persona, listener count, and stream descriptor.",
+    },
+    tool(() => subwaveNowPlaying()),
+  );
+
+  server.registerTool(
+    "subwave_state",
+    {
+      title: "Subwave State",
+      description: "Return Subwave current queue, recent history, DJ log, and station state.",
+      inputSchema: {
+        pageSize: z.number().int().min(1).max(100).default(20),
+      },
+    },
+    tool(({ pageSize }) => subwaveStateSummary(pageSize)),
+  );
+
+  server.registerTool(
+    "subwave_streams",
+    {
+      title: "Subwave Streams",
+      description: "Return Subwave stream descriptor and PLS/M3U tune-in files.",
+    },
+    tool(() => subwaveStreams()),
+  );
+
+  server.registerTool(
+    "subwave_search",
+    {
+      title: "Subwave Search",
+      description: "Search Subwave's admin library endpoint for queue-ready tracks. Requires Subwave admin credentials.",
+      inputSchema: {
+        query: z.string().min(1),
+        limit: z.number().int().min(1).max(25).default(12),
+      },
+    },
+    tool(({ query, limit }) => subwaveSearchTracks(query, limit)),
+  );
+
+  server.registerTool(
+    "subwave_recent",
+    {
+      title: "Subwave Recent Tracks",
+      description: "Return recently added Subwave tracks and playlist summary. Requires Subwave admin credentials.",
+      inputSchema: {
+        limit: z.number().int().min(1).max(50).default(20),
+      },
+    },
+    tool(({ limit }) => subwaveRecentTracks(limit)),
   );
 
   server.registerTool(

@@ -12,6 +12,10 @@ import {
   beetsQueues,
   beetsWorkers,
   jellyfinSystemInfo,
+  navidromeMusicFolders,
+  navidromePing,
+  navidromeScanStatus as navidromeScanStatusRaw,
+  navidromeSearch3,
   radarrAddMovie,
   radarrMovieLookup,
   radarrMovies,
@@ -25,6 +29,18 @@ import {
   slskdServer,
   slskdShares,
   slskdUploads,
+  subwaveDj,
+  subwaveHealth,
+  subwaveListenM3u,
+  subwaveListenPls,
+  subwaveNowPlaying as subwaveNowPlayingRaw,
+  subwavePlaylists,
+  subwaveRecent as subwaveRecentRaw,
+  subwaveSchedule,
+  subwaveSearch as subwaveSearchRaw,
+  subwaveSession,
+  subwaveState,
+  subwaveStats,
 } from "./adapters.js";
 import { arrGet, jellyfinGet, sabGet } from "./http.js";
 import { bytes, completedAfterFailure, firstString, itemTitle } from "./format.js";
@@ -45,7 +61,15 @@ import {
 } from "./views.js";
 
 function configuredTargets(appName?: AppName) {
-  return appName ? [getApp(appName)] : apps.filter((app) => app.url && (!app.keyEnv || app.apiKey));
+  return appName
+    ? [getApp(appName)]
+    : apps.filter((app) =>
+        Boolean(
+          app.url
+          && (!app.keyEnv || app.apiKey)
+          && (!app.credentialsRequired || (app.username && app.password)),
+        ),
+      );
 }
 
 function futureDateLabel(value?: unknown) {
@@ -73,6 +97,65 @@ function normalizeHealthIssues(app: AppConfig, issues: AnyRecord[]) {
 
 function configuredJellyfin() {
   return getApp("jellyfin");
+}
+
+function adminConfigured(app: AppConfig) {
+  return Boolean(app.username && app.password);
+}
+
+function normalizeSubwaveTrack(track?: AnyRecord) {
+  if (!track) return undefined;
+  return {
+    id: firstString(track.id, track.subsonic_id),
+    title: firstString(track.title) ?? "unknown track",
+    artist: firstString(track.artist),
+    album: firstString(track.album),
+    genre: firstString(track.genre),
+    year: track.year,
+    duration: track.duration,
+    bpm: track.bpm,
+    musicalKey: track.musicalKey,
+    moods: track.moods,
+    energy: track.energy,
+    source: track.source,
+    requestedBy: track.requestedBy,
+    startedAt: track.startedAt,
+    queuedAt: track.queuedAt,
+  };
+}
+
+function normalizeNavidromeSearch(response: AnyRecord) {
+  const result = response.searchResult3 ?? {};
+  const artists: AnyRecord[] = Array.isArray(result.artist) ? result.artist : [];
+  const albums: AnyRecord[] = Array.isArray(result.album) ? result.album : [];
+  const songs: AnyRecord[] = Array.isArray(result.song) ? result.song : [];
+  return {
+    artists: artists.map((artist) => ({
+      id: artist.id,
+      name: firstString(artist.name) ?? "artist",
+      albumCount: artist.albumCount,
+      coverArt: artist.coverArt,
+    })),
+    albums: albums.map((album) => ({
+      id: album.id,
+      name: firstString(album.name, album.title) ?? "album",
+      artist: firstString(album.artist),
+      songCount: album.songCount,
+      year: album.year,
+      coverArt: album.coverArt,
+    })),
+    songs: songs.map((song) => ({
+      id: song.id,
+      title: firstString(song.title) ?? "song",
+      artist: firstString(song.artist),
+      album: firstString(song.album),
+      track: song.track,
+      year: song.year,
+      genre: song.genre,
+      duration: song.duration,
+      coverArt: song.coverArt,
+    })),
+  };
 }
 
 export async function systemStatus(appName?: AppName) {
@@ -107,6 +190,28 @@ export async function systemStatus(appName?: AppName) {
         const result = await withStatus(app, "api/v0/server", () => slskdServer(app));
         return result.ok
           ? { app: app.name, label: app.label, ok: true, state: result.data.state, connected: result.data.isConnected, loggedIn: result.data.isLoggedIn }
+          : result;
+      }
+      if (app.kind === "navidrome") {
+        const [ping, scan] = await Promise.all([
+          withStatus(app, "ping", () => navidromePing(app)),
+          withStatus(app, "getScanStatus", () => navidromeScanStatusRaw(app)),
+        ]);
+        return ping.ok
+          ? {
+              app: app.name,
+              label: app.label,
+              ok: true,
+              version: ping.data.version,
+              scan: scan.ok ? scan.data.scanStatus : undefined,
+              warnings: scan.ok ? [] : [scan.error],
+            }
+          : ping;
+      }
+      if (app.kind === "subwave") {
+        const result = await withStatus(app, "api/health", () => subwaveHealth(app));
+        return result.ok
+          ? { app: app.name, label: app.label, ok: true, status: result.data.status, adminConfigured: adminConfigured(app) }
           : result;
       }
       const result = await withStatus(app, "system/status", () => arrStatus(app));
@@ -179,6 +284,58 @@ export async function serviceStatus(appName?: AppName) {
               ]
             : [result.error],
           details: result.ok ? { state: result.data.state } : undefined,
+        };
+      }
+      if (app.kind === "navidrome") {
+        const [ping, scan, folders] = await Promise.all([
+          withStatus(app, "ping", () => navidromePing(app)),
+          withStatus(app, "getScanStatus", () => navidromeScanStatusRaw(app)),
+          withStatus(app, "getMusicFolders", () => navidromeMusicFolders(app)),
+        ]);
+        const warnings = [ping, scan, folders].filter((result) => !result.ok).map((result) => result.error);
+        return {
+          service: app.name,
+          label: app.label,
+          configured: true,
+          reachable: ping.ok,
+          authenticated: ping.ok,
+          version: ping.ok ? ping.data.version : undefined,
+          health: warnings.length === 0 ? "ok" : "warning",
+          latencyMs: ping.latencyMs,
+          warnings,
+          details: {
+            scanning: scan.ok ? scan.data.scanStatus?.scanning : undefined,
+            lastScan: scan.ok ? scan.data.scanStatus?.lastScan : undefined,
+            folderCount: scan.ok ? scan.data.scanStatus?.folderCount : undefined,
+            musicFolders: folders.ok ? folders.data.musicFolders?.musicFolder?.length ?? 0 : undefined,
+          },
+        };
+      }
+      if (app.kind === "subwave") {
+        const [health, nowPlaying] = await Promise.all([
+          withStatus(app, "api/health", () => subwaveHealth(app)),
+          withStatus(app, "api/now-playing", () => subwaveNowPlayingRaw(app)),
+        ]);
+        const warnings = [health, nowPlaying].filter((result) => !result.ok).map((result) => result.error);
+        return {
+          service: app.name,
+          label: app.label,
+          configured: true,
+          reachable: health.ok,
+          authenticated: health.ok,
+          version: undefined,
+          health: warnings.length === 0 && health.ok && health.data.status === "on-air" ? "ok" : "warning",
+          latencyMs: health.latencyMs,
+          warnings,
+          details: nowPlaying.ok
+            ? {
+                status: health.ok ? health.data.status : undefined,
+                streamOnline: nowPlaying.data.streamOnline,
+                listeners: nowPlaying.data.listeners,
+                current: normalizeSubwaveTrack(nowPlaying.data.nowPlaying),
+                dj: nowPlaying.data.dj,
+              }
+            : undefined,
         };
       }
 
@@ -298,6 +455,42 @@ export async function serviceHealth(appName?: AppName) {
           health: issues.length === 0 ? "ok" : "warning",
           issues,
           state: result.ok ? result.data.state : undefined,
+        };
+      }
+      if (app.kind === "navidrome") {
+        const [ping, scan] = await Promise.all([
+          withStatus(app, "ping", () => navidromePing(app)),
+          withStatus(app, "getScanStatus", () => navidromeScanStatusRaw(app)),
+        ]);
+        const issues = [
+          ...(ping.ok ? [] : [{ severity: "error", message: ping.error }]),
+          ...(scan.ok ? [] : [{ severity: "warning", message: scan.error }]),
+        ];
+        return {
+          service: app.name,
+          ok: issues.length === 0,
+          health: issues.length === 0 ? "ok" : ping.ok ? "warning" : "error",
+          issues,
+          scan: scan.ok ? scan.data.scanStatus : undefined,
+        };
+      }
+      if (app.kind === "subwave") {
+        const [health, state] = await Promise.all([
+          withStatus(app, "api/health", () => subwaveHealth(app)),
+          withStatus(app, "api/state", () => subwaveState(app)),
+        ]);
+        const issues = [
+          ...(health.ok ? [] : [{ severity: "error", message: health.error }]),
+          ...(state.ok ? [] : [{ severity: "warning", message: state.error }]),
+          ...(health.ok && health.data.status !== "on-air" ? [{ severity: "warning", message: `Subwave status is ${health.data.status}` }] : []),
+        ];
+        return {
+          service: app.name,
+          ok: issues.length === 0,
+          health: issues.length === 0 ? "ok" : health.ok ? "warning" : "error",
+          issues,
+          current: state.ok ? normalizeSubwaveTrack(state.data.current) : undefined,
+          queueLength: state.ok && Array.isArray(state.data.upcoming) ? state.data.upcoming.length : undefined,
         };
       }
 
@@ -507,6 +700,8 @@ export async function history(appName: AppName, pageSize = 20) {
   const app = getApp(appName);
   if (app.kind === "sabnzbd") return sabGet(app, "history", { limit: pageSize });
   if (app.kind === "jellyfin") return jellyfinActivity(pageSize);
+  if (app.kind === "navidrome") return navidromeScanStatusRaw(app);
+  if (app.kind === "subwave") return subwaveState(app);
   return arrGet(app, "history", { page: 1, pageSize, sortKey: "date", sortDirection: "descending" });
 }
 
@@ -545,6 +740,41 @@ function normalizeJellyfinActivity(app: AppConfig, response: AnyRecord) {
   }));
 }
 
+function normalizeNavidromeActivity(app: AppConfig, response: AnyRecord) {
+  const scan = response.scanStatus ?? {};
+  return [{
+    service: app.name,
+    title: scan.scanning ? "Scan in progress" : "Last library scan",
+    eventType: scan.scanType ?? "scan",
+    date: scan.lastScan,
+    successful: scan.scanning === false,
+    count: scan.count,
+    folderCount: scan.folderCount,
+  }];
+}
+
+function normalizeSubwaveActivity(app: AppConfig, response: AnyRecord, pageSize = 20) {
+  const historyItems: AnyRecord[] = Array.isArray(response.history) ? response.history : [];
+  const djLog: AnyRecord[] = Array.isArray(response.djLog) ? response.djLog : [];
+  return [
+    ...historyItems.slice(0, pageSize).map((item) => ({
+      service: app.name,
+      title: firstString(item.title) ?? "track",
+      artist: firstString(item.artist),
+      eventType: "played",
+      date: firstString(item.endedAt, item.startedAt),
+      successful: true,
+    })),
+    ...djLog.slice(0, Math.max(0, pageSize - historyItems.length)).map((item) => ({
+      service: app.name,
+      title: firstString(item.text) ?? "DJ log",
+      eventType: firstString(item.kind) ?? "dj-log",
+      date: item.t,
+      successful: true,
+    })),
+  ].slice(0, pageSize);
+}
+
 function flattenTransfers(groups: AnyRecord[] = []) {
   return groups.flatMap((group) =>
     (Array.isArray(group.directories) ? group.directories : []).flatMap((directory: AnyRecord) =>
@@ -573,7 +803,11 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
           ? normalizeSabHistory(app, result.data as AnyRecord)
           : app.kind === "jellyfin"
             ? normalizeJellyfinActivity(app, result.data as AnyRecord)
-            : normalizeArrHistory(app, result.data as AnyRecord);
+            : app.kind === "navidrome"
+              ? normalizeNavidromeActivity(app, result.data as AnyRecord)
+              : app.kind === "subwave"
+                ? normalizeSubwaveActivity(app, result.data as AnyRecord, pageSize)
+                : normalizeArrHistory(app, result.data as AnyRecord);
       return { service: app.name, ok: true, items };
     }),
   );
@@ -983,6 +1217,332 @@ export async function slskdStatus() {
       totalFiles: uploadFiles.length,
     },
     shares: localShares,
+    warnings,
+  });
+}
+
+export async function navidromeStatus() {
+  const app = getApp("navidrome");
+  const [ping, scan, folders] = await Promise.all([
+    withStatus(app, "ping", () => navidromePing(app)),
+    withStatus(app, "getScanStatus", () => navidromeScanStatusRaw(app)),
+    withStatus(app, "getMusicFolders", () => navidromeMusicFolders(app)),
+  ]);
+  const warnings = [ping, scan, folders].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`);
+  const scanStatus = scan.ok ? scan.data.scanStatus : undefined;
+  const musicFolders = folders.ok ? folders.data.musicFolders?.musicFolder ?? [] : [];
+  const summary = warnings.length === 0
+    ? `Navidrome is reachable; scan is ${scanStatus?.scanning ? "running" : "idle"} with ${musicFolders.length} accessible music folder.`
+    : `Navidrome reported ${warnings.length} warnings.`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Navidrome", summary, [
+      {
+        id: "library",
+        title: "Library",
+        tone: warnings.length > 0 ? "warning" : scanStatus?.scanning ? "info" : "ok",
+        metrics: [
+          { label: "Music Folders", value: musicFolders.length },
+          { label: "Scanned Items", value: scanStatus?.count ?? "unknown" },
+          { label: "Folder Count", value: scanStatus?.folderCount ?? "unknown" },
+        ],
+        items: [
+          {
+            label: "Scan",
+            value: scanStatus?.scanning ? "running" : "idle",
+            detail: scanStatus?.lastScan,
+            tone: scanStatus?.scanning ? "info" : "ok",
+          },
+        ],
+      },
+    ]), viewState({ warnings })),
+    ok: warnings.length === 0,
+    version: ping.ok ? ping.data.version : undefined,
+    scanStatus,
+    musicFolders,
+    warnings,
+  });
+}
+
+export async function navidromeSearch(query: string, limit = 12) {
+  const app = getApp("navidrome");
+  const result = await withStatus(app, "search3", () => navidromeSearch3(app, query, limit));
+  const normalized = result.ok ? normalizeNavidromeSearch(result.data) : { artists: [], albums: [], songs: [] };
+  const total = normalized.artists.length + normalized.albums.length + normalized.songs.length;
+  const warnings = result.ok ? [] : [result.error];
+  const summary = result.ok ? `${total} Navidrome results for "${query}".` : `Navidrome search failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Navidrome Search", summary, [
+      {
+        id: "results",
+        title: "Results",
+        tone: warnings.length > 0 ? "warning" : total > 0 ? "info" : "ok",
+        metrics: [
+          { label: "Artists", value: normalized.artists.length },
+          { label: "Albums", value: normalized.albums.length },
+          { label: "Songs", value: normalized.songs.length },
+        ],
+        items: [
+          ...normalized.songs.slice(0, 8).map((song) => ({ label: song.title, value: song.artist, detail: song.album, tone: "info" as const })),
+          ...normalized.albums.slice(0, 4).map((album) => ({ label: album.name, value: album.artist, detail: "album", tone: "info" as const })),
+        ],
+      },
+    ]), viewState({ empty: total === 0, emptyLabel: "No Navidrome results", warnings })),
+    query,
+    ...normalized,
+    warnings,
+  });
+}
+
+export async function navidromeScanStatus() {
+  const app = getApp("navidrome");
+  const result = await withStatus(app, "getScanStatus", () => navidromeScanStatusRaw(app));
+  const scanStatus = result.ok ? result.data.scanStatus : undefined;
+  const warnings = result.ok ? [] : [result.error];
+  const summary = result.ok
+    ? `Navidrome scan is ${scanStatus?.scanning ? "running" : "idle"}; last scan ${scanStatus?.lastScan ?? "unknown"}.`
+    : `Navidrome scan status failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Navidrome Scan", summary, [
+      {
+        id: "scan",
+        title: "Scan Status",
+        tone: warnings.length > 0 ? "warning" : scanStatus?.scanning ? "info" : "ok",
+        metrics: [
+          { label: "Scanned Items", value: scanStatus?.count ?? "unknown" },
+          { label: "Folder Count", value: scanStatus?.folderCount ?? "unknown" },
+        ],
+        items: [{
+          label: "Last Scan",
+          value: scanStatus?.scanType ?? "unknown",
+          detail: scanStatus?.lastScan,
+          tone: scanStatus?.scanning ? "info" : "ok",
+        }],
+      },
+    ]), viewState({ warnings })),
+    scanStatus,
+    warnings,
+  });
+}
+
+export async function subwaveStatus() {
+  const app = getApp("subwave");
+  const [health, nowPlaying, state, stats] = await Promise.all([
+    withStatus(app, "api/health", () => subwaveHealth(app)),
+    withStatus(app, "api/now-playing", () => subwaveNowPlayingRaw(app)),
+    withStatus(app, "api/state", () => subwaveState(app)),
+    adminConfigured(app)
+      ? withStatus(app, "api/stats", () => subwaveStats(app))
+      : Promise.resolve({ ok: false as const, app: app.name, operation: "api/stats", error: "Subwave admin credentials are not configured", latencyMs: 0 }),
+  ]);
+  const current = nowPlaying.ok ? normalizeSubwaveTrack(nowPlaying.data.nowPlaying) : undefined;
+  const warnings = [health, nowPlaying, state].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`);
+  const summary = warnings.length === 0
+    ? `Subwave is ${health.ok ? health.data.status : "reachable"}; ${current?.title ?? "no track"} is currently playing.`
+    : `Subwave reported ${warnings.length} warnings.`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave", summary, [
+      {
+        id: "station",
+        title: "Station",
+        tone: warnings.length > 0 ? "warning" : nowPlaying.ok && nowPlaying.data.streamOnline ? "ok" : "warning",
+        metrics: [
+          { label: "Listeners", value: nowPlaying.ok ? nowPlaying.data.listeners ?? 0 : "unknown" },
+          { label: "Queue", value: state.ok && Array.isArray(state.data.upcoming) ? state.data.upcoming.length : "unknown" },
+          { label: "Admin Reads", value: adminConfigured(app) ? "configured" : "missing", tone: adminConfigured(app) ? "ok" : "info" },
+        ],
+        items: [{
+          label: current?.title ?? "No current track",
+          value: current?.artist,
+          detail: nowPlaying.ok ? nowPlaying.data.dj?.name ?? nowPlaying.data.activeShow?.name : undefined,
+          tone: "info",
+        }],
+      },
+    ]), viewState({ warnings })),
+    ok: warnings.length === 0,
+    health: health.ok ? health.data : undefined,
+    nowPlaying: nowPlaying.ok ? nowPlaying.data : undefined,
+    state: state.ok ? state.data : undefined,
+    stats: stats.ok ? stats.data : undefined,
+    adminConfigured: adminConfigured(app),
+    warnings,
+  });
+}
+
+export async function subwaveNowPlaying() {
+  const app = getApp("subwave");
+  const result = await withStatus(app, "api/now-playing", () => subwaveNowPlayingRaw(app));
+  const current = result.ok ? normalizeSubwaveTrack(result.data.nowPlaying) : undefined;
+  const warnings = result.ok ? [] : [result.error];
+  const summary = result.ok
+    ? `${current?.title ?? "Nothing"} by ${current?.artist ?? "unknown artist"} is currently playing.`
+    : `Subwave now-playing failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave Now Playing", summary, [
+      {
+        id: "now-playing",
+        title: "Now Playing",
+        tone: warnings.length > 0 ? "warning" : "info",
+        metrics: [
+          { label: "Listeners", value: result.ok ? result.data.listeners ?? 0 : "unknown" },
+          { label: "Stream", value: result.ok && result.data.streamOnline ? "online" : "unknown", tone: result.ok && result.data.streamOnline ? "ok" : "warning" },
+        ],
+        items: current ? [{
+          label: current.title,
+          value: current.artist,
+          detail: current.album,
+          tone: "info",
+        }] : [],
+      },
+    ]), viewState({ empty: result.ok && !current, emptyLabel: "No current Subwave track", warnings })),
+    current,
+    context: result.ok ? result.data.context : undefined,
+    dj: result.ok ? result.data.dj : undefined,
+    activeShow: result.ok ? result.data.activeShow : undefined,
+    stream: result.ok ? result.data.stream : undefined,
+    listeners: result.ok ? result.data.listeners : undefined,
+    warnings,
+  });
+}
+
+export async function subwaveStateSummary(pageSize = 20) {
+  const app = getApp("subwave");
+  const result = await withStatus(app, "api/state", () => subwaveState(app));
+  const history = result.ok && Array.isArray(result.data.history) ? result.data.history : [];
+  const upcoming = result.ok && Array.isArray(result.data.upcoming) ? result.data.upcoming : [];
+  const warnings = result.ok ? [] : [result.error];
+  const summary = result.ok
+    ? `Subwave has ${upcoming.length} upcoming tracks and ${history.length} history rows.`
+    : `Subwave state failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave State", summary, [
+      {
+        id: "queue",
+        title: "Queue",
+        tone: warnings.length > 0 ? "warning" : upcoming.length > 0 ? "info" : "ok",
+        metrics: [
+          { label: "Upcoming", value: upcoming.length },
+          { label: "History", value: history.length },
+        ],
+        items: upcoming.slice(0, pageSize).map((item) => ({
+          label: firstString(item.title) ?? "track",
+          value: firstString(item.artist),
+          detail: item.requestedBy,
+          tone: "info" as const,
+        })),
+      },
+    ]), viewState({ warnings })),
+    current: result.ok ? normalizeSubwaveTrack(result.data.current) : undefined,
+    upcoming: upcoming.slice(0, pageSize).map(normalizeSubwaveTrack),
+    history: history.slice(0, pageSize).map(normalizeSubwaveTrack),
+    djLog: result.ok && Array.isArray(result.data.djLog) ? result.data.djLog.slice(0, pageSize) : [],
+    timezone: result.ok ? result.data.timezone : undefined,
+    warnings,
+  });
+}
+
+export async function subwaveStreams() {
+  const app = getApp("subwave");
+  const [nowPlaying, pls, m3u] = await Promise.all([
+    withStatus(app, "api/now-playing", () => subwaveNowPlayingRaw(app)),
+    withStatus(app, "listen.pls", () => subwaveListenPls(app)),
+    withStatus(app, "listen.m3u", () => subwaveListenM3u(app)),
+  ]);
+  const warnings = [nowPlaying, pls, m3u].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`);
+  const summary = warnings.length === 0 ? "Subwave stream playlists are reachable." : `Subwave stream lookup reported ${warnings.length} warnings.`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave Streams", summary, [
+      {
+        id: "streams",
+        title: "Streams",
+        tone: warnings.length > 0 ? "warning" : "ok",
+        metrics: [
+          { label: "PLS", value: pls.ok ? "ok" : "error", tone: pls.ok ? "ok" : "warning" },
+          { label: "M3U", value: m3u.ok ? "ok" : "error", tone: m3u.ok ? "ok" : "warning" },
+        ],
+        items: [{
+          label: nowPlaying.ok ? nowPlaying.data.stream?.mount ?? "stream" : "stream",
+          value: nowPlaying.ok ? nowPlaying.data.stream?.format : undefined,
+          detail: nowPlaying.ok ? `${nowPlaying.data.stream?.bitrate ?? "unknown"} kbps` : undefined,
+          tone: nowPlaying.ok && nowPlaying.data.streamOnline ? "ok" : "warning",
+        }],
+      },
+    ]), viewState({ warnings })),
+    stream: nowPlaying.ok ? nowPlaying.data.stream : undefined,
+    streamOnline: nowPlaying.ok ? nowPlaying.data.streamOnline : undefined,
+    playlists: {
+      pls: pls.ok ? pls.data : undefined,
+      m3u: m3u.ok ? m3u.data : undefined,
+    },
+    warnings,
+  });
+}
+
+export async function subwaveSearchTracks(query: string, limit = 12) {
+  const app = getApp("subwave");
+  const result = await withStatus(app, "api/dj/search", () => subwaveSearchRaw(app, query));
+  const tracks: AnyRecord[] = result.ok && Array.isArray(result.data.results) ? result.data.results.slice(0, limit) : [];
+  const warnings = result.ok ? [] : [result.error];
+  const summary = result.ok ? `${tracks.length} Subwave library results for "${query}".` : `Subwave search failed: ${result.error}`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave Search", summary, [
+      {
+        id: "results",
+        title: "Results",
+        tone: warnings.length > 0 ? "warning" : tracks.length > 0 ? "info" : "ok",
+        metrics: [{ label: "Tracks", value: tracks.length }],
+        items: tracks.map((track) => ({
+          label: firstString(track.title) ?? "track",
+          value: firstString(track.artist),
+          detail: firstString(track.album),
+          tone: "info" as const,
+        })),
+      },
+    ]), viewState({ empty: result.ok && tracks.length === 0, emptyLabel: "No Subwave results", warnings })),
+    query,
+    tracks,
+    warnings,
+  });
+}
+
+export async function subwaveRecentTracks(limit = 20) {
+  const app = getApp("subwave");
+  const [recent, playlists] = await Promise.all([
+    withStatus(app, "api/dj/recent", () => subwaveRecentRaw(app, limit)),
+    withStatus(app, "api/dj/playlists", () => subwavePlaylists(app)),
+  ]);
+  const tracks: AnyRecord[] = recent.ok && Array.isArray(recent.data.results) ? recent.data.results : [];
+  const playlistRows: AnyRecord[] = playlists.ok && Array.isArray(playlists.data.results) ? playlists.data.results : [];
+  const warnings = [recent, playlists].filter((result) => !result.ok).map((result) => `${result.operation}: ${result.error}`);
+  const summary = recent.ok ? `${tracks.length} recently added Subwave tracks returned.` : `Subwave recent lookup failed: ${recent.error}`;
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave Recent", summary, [
+      {
+        id: "recent",
+        title: "Recently Added",
+        tone: warnings.length > 0 ? "warning" : tracks.length > 0 ? "info" : "ok",
+        metrics: [
+          { label: "Tracks", value: tracks.length },
+          { label: "Playlists", value: playlistRows.length },
+        ],
+        items: tracks.slice(0, limit).map((track) => ({
+          label: firstString(track.title) ?? "track",
+          value: firstString(track.artist),
+          detail: firstString(track.album),
+          tone: "info" as const,
+        })),
+      },
+    ]), viewState({ empty: tracks.length === 0, emptyLabel: "No recent Subwave tracks", warnings })),
+    tracks,
+    playlists: playlistRows,
     warnings,
   });
 }

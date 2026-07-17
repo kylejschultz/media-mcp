@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import { arrGet, arrPost, arrPut, beetsGet, jellyfinGet, sabGet, slskdGet } from "./http.js";
+import { arrGet, arrPost, arrPut, beetsGet, jellyfinGet, navidromeGet, sabGet, slskdGet, subwaveAdminGet, subwaveGet, subwaveText } from "./http.js";
 import type { AnyRecord } from "./types.js";
 
 export async function arrHealth(app: AppConfig) {
@@ -100,4 +100,73 @@ export async function slskdUploads(app: AppConfig) {
 
 export async function slskdShares(app: AppConfig) {
   return slskdGet<AnyRecord>(app, "api/v0/shares");
+}
+
+export async function navidromePing(app: AppConfig) {
+  return navidromeGet<AnyRecord>(app, "ping");
+}
+
+export async function navidromeScanStatus(app: AppConfig) {
+  return navidromeGet<AnyRecord>(app, "getScanStatus");
+}
+
+export async function navidromeMusicFolders(app: AppConfig) {
+  return navidromeGet<AnyRecord>(app, "getMusicFolders");
+}
+
+export async function navidromeSearch3(app: AppConfig, query: string, limit = 12) {
+  return navidromeGet<AnyRecord>(app, "search3", {
+    query,
+    artistCount: limit,
+    albumCount: limit,
+    songCount: limit,
+  });
+}
+
+export async function subwaveHealth(app: AppConfig) {
+  return subwaveGet<AnyRecord>(app, "api/health");
+}
+
+export async function subwaveNowPlaying(app: AppConfig) {
+  return subwaveGet<AnyRecord>(app, "api/now-playing");
+}
+
+export async function subwaveState(app: AppConfig) {
+  return subwaveGet<AnyRecord>(app, "api/state");
+}
+
+export async function subwaveDj(app: AppConfig) {
+  return subwaveGet<AnyRecord>(app, "api/dj");
+}
+
+export async function subwaveSchedule(app: AppConfig) {
+  return subwaveGet<AnyRecord>(app, "api/schedule");
+}
+
+export async function subwaveSession(app: AppConfig) {
+  return subwaveGet<AnyRecord>(app, "api/session");
+}
+
+export async function subwaveStats(app: AppConfig) {
+  return subwaveAdminGet<AnyRecord>(app, "api/stats");
+}
+
+export async function subwaveSearch(app: AppConfig, query: string) {
+  return subwaveAdminGet<AnyRecord>(app, "api/dj/search", { q: query });
+}
+
+export async function subwaveRecent(app: AppConfig, limit = 20) {
+  return subwaveAdminGet<AnyRecord>(app, "api/dj/recent", { limit });
+}
+
+export async function subwavePlaylists(app: AppConfig) {
+  return subwaveAdminGet<AnyRecord>(app, "api/dj/playlists");
+}
+
+export async function subwaveListenPls(app: AppConfig) {
+  return subwaveText(app, "listen.pls");
+}
+
+export async function subwaveListenM3u(app: AppConfig) {
+  return subwaveText(app, "listen.m3u");
 }
