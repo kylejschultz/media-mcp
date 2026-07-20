@@ -74,6 +74,7 @@ let existingSeries: unknown[] = [];
 let queueRecords: unknown[] = [];
 let historyRecords: unknown[] = [];
 let missingRecords: unknown[] = [];
+let subwaveSettings: any = {};
 const failedRequests = new Set<string>();
 
 function jsonResponse(value: unknown, status = 200) {
@@ -90,6 +91,14 @@ beforeEach(() => {
   queueRecords = [];
   historyRecords = [];
   missingRecords = [];
+  subwaveSettings = {
+    shows: [
+      { id: "s_default", name: "Default Show", moods: ["calm"], topic: "Default lane" },
+      { id: "s_drive", name: "Drive Time", moods: ["energetic"], topic: "Drive lane" },
+    ],
+    allowedMoods: ["calm", "energetic", "night"],
+    schedule: Object.fromEntries(Array.from({ length: 7 }, (_, day) => [String(day), Array.from({ length: 24 }, () => "s_default")])),
+  };
   failedRequests.clear();
   process.env.ALLOW_REQUESTS = "";
 });
@@ -231,6 +240,25 @@ globalThis.fetch = async (input, init) => {
         });
       case "/api/stats":
         return jsonResponse({ llm: { provider: "test", calls: 1 }, requests: { total: 1, resolved: 1 } });
+      case "/api/settings":
+        return jsonResponse(subwaveSettings);
+      case "/api/shows":
+        if (method !== "POST") return jsonResponse({ error: "Expected POST" }, 405);
+        subwaveSettings = {
+          ...subwaveSettings,
+          shows: [
+            ...subwaveSettings.shows.filter((show: any) => show.id !== (call.body as any).show.id),
+            (call.body as any).show,
+          ],
+        };
+        return jsonResponse({ ok: true, show: (call.body as any).show });
+      case "/api/schedule":
+        if (method !== "PUT") return jsonResponse({ error: "Expected PUT" }, 405);
+        subwaveSettings = {
+          ...subwaveSettings,
+          schedule: (call.body as any).schedule,
+        };
+        return jsonResponse({ ok: true, schedule: (call.body as any).schedule });
       case "/api/dj/search":
         return jsonResponse({ results: [{ id: "song-1", title: "Test Song", artist: "Test Artist", album: "Test Album" }] });
       case "/api/dj/recent":
@@ -754,6 +782,52 @@ describe("Dashboard contract hardening", () => {
     const search = await media.subwaveSearchTracks("test", 5) as any;
     assertSummaryEnvelope(search, "subwaveSearchTracks");
     assert.equal(search.tracks[0].title, "Test Song");
+  });
+
+  it("upserts Subwave shows and updates schedule through admin API with read-back verification", async () => {
+    await withMcpClient(async (client) => {
+      const blocked = await callToolError(client, "subwave_upsert_show", {
+        show: { id: "s_night", name: "Night Shift", moods: ["night"], topic: "Late lane" },
+      });
+      assert.match(blocked, /Request tools are disabled/);
+      assert.equal(fetchCalls.some((call) => call.method === "POST" && call.path === "/api/shows"), false);
+
+      process.env.ALLOW_REQUESTS = "true";
+      const upserted = await callToolJson(client, "subwave_upsert_show", {
+        show: { id: "s_night", name: "Night Shift", moods: ["night"], topic: "Late lane" },
+      });
+      assert.equal(upserted.show.name, "Night Shift");
+      assert.equal(upserted.showNames.some((show: any) => show.id === "s_night"), true);
+      assert.equal(fetchCalls.some((call) => call.method === "POST" && call.path === "/api/shows"), true);
+
+      const schedule = Object.fromEntries(Array.from({ length: 7 }, (_, day) => [
+        String(day),
+        Array.from({ length: 24 }, (_, hour) => (day === 1 && hour === 9 ? "s_night" : "s_default")),
+      ]));
+      const updated = await callToolJson(client, "subwave_update_schedule", { schedule });
+      assert.equal(updated.scheduleDifferences.some((slot: any) => slot.day === 1 && slot.hour === 9 && slot.after === "s_night"), true);
+      assert.deepEqual(updated.droppedSlots, []);
+      assert.equal(fetchCalls.some((call) => call.method === "PUT" && call.path === "/api/schedule"), true);
+    });
+  });
+
+  it("validates Subwave show moods and scheduled show ids before writing", async () => {
+    process.env.ALLOW_REQUESTS = "true";
+
+    await assert.rejects(
+      media.subwaveUpsertShow({ id: "s_bad", name: "Bad Mood", moods: ["bogus"] }),
+      /Invalid Subwave show moods/,
+    );
+    assert.equal(fetchCalls.some((call) => call.method === "POST" && call.path === "/api/shows"), false);
+
+    await assert.rejects(
+      media.subwaveUpdateWeeklySchedule(Object.fromEntries(Array.from({ length: 7 }, (_, day) => [
+        String(day),
+        Array.from({ length: 24 }, (_, hour) => (day === 2 && hour === 10 ? "missing-show" : "s_default")),
+      ]))),
+      /invalid slots/,
+    );
+    assert.equal(fetchCalls.some((call) => call.method === "PUT" && call.path === "/api/schedule"), false);
   });
 });
 

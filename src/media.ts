@@ -39,8 +39,11 @@ import {
   subwaveSchedule,
   subwaveSearch as subwaveSearchRaw,
   subwaveSession,
+  subwaveSettings,
   subwaveState,
   subwaveStats,
+  subwaveUpdateSchedule as subwaveUpdateScheduleRaw,
+  subwaveUpsertShow as subwaveUpsertShowRaw,
 } from "./adapters.js";
 import { arrGet, jellyfinGet, sabGet } from "./http.js";
 import { bytes, completedAfterFailure, firstString, itemTitle } from "./format.js";
@@ -122,6 +125,133 @@ function normalizeSubwaveTrack(track?: AnyRecord) {
     startedAt: track.startedAt,
     queuedAt: track.queuedAt,
   };
+}
+
+const fallbackSubwaveMoods = [
+  "calm",
+  "celebratory",
+  "curious",
+  "driving",
+  "energetic",
+  "evening",
+  "festival",
+  "focus",
+  "night",
+  "reflective",
+  "romantic",
+  "sunny",
+  "upbeat",
+  "warm",
+  "weird",
+  "workout",
+];
+
+function asStringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string" && item.trim().length > 0) : [];
+}
+
+function subwaveShowRows(settings: AnyRecord): AnyRecord[] {
+  return Array.isArray(settings.shows) ? settings.shows : [];
+}
+
+function subwaveShowIds(settings: AnyRecord) {
+  return new Set(subwaveShowRows(settings).map((show) => firstString(show.id)).filter((id): id is string => Boolean(id)));
+}
+
+function subwaveAllowedMoods(settings: AnyRecord) {
+  const moodCandidates = [
+    ...asStringArray(settings.allowedMoods),
+    ...asStringArray(settings.moods),
+    ...asStringArray(settings.showMoods),
+    ...subwaveShowRows(settings).flatMap((show) => asStringArray(show.moods)),
+    ...((Array.isArray(settings.personas) ? settings.personas : [])
+      .map((persona: AnyRecord) => firstString(persona.mood))
+      .filter((mood: string | undefined): mood is string => Boolean(mood))),
+  ];
+  return new Set((moodCandidates.length > 0 ? moodCandidates : fallbackSubwaveMoods).map((mood) => mood.trim()).filter(Boolean));
+}
+
+function summarizeSubwaveShows(settings: AnyRecord) {
+  return subwaveShowRows(settings).map((show) => ({
+    id: firstString(show.id),
+    name: firstString(show.name) ?? firstString(show.id) ?? "show",
+  }));
+}
+
+function validateSubwaveShow(show: AnyRecord, settings: AnyRecord) {
+  const id = firstString(show.id);
+  const name = firstString(show.name);
+  if (!id) throw new Error("Subwave show id is required.");
+  if (!name) throw new Error("Subwave show name is required.");
+
+  const allowedMoods = subwaveAllowedMoods(settings);
+  const moods = asStringArray(show.moods);
+  const invalidMoods = moods.filter((mood) => !allowedMoods.has(mood));
+  if (invalidMoods.length > 0) {
+    throw new Error(`Invalid Subwave show moods for ${id}: ${invalidMoods.join(", ")}. Allowed moods: ${[...allowedMoods].sort().join(", ")}`);
+  }
+}
+
+function normalizeSubwaveSchedule(schedule: unknown, settings: AnyRecord) {
+  const rows = Array.isArray(schedule)
+    ? schedule
+    : schedule && typeof schedule === "object"
+      ? Array.from({ length: 7 }, (_, index) => (schedule as AnyRecord)[String(index)] ?? (schedule as AnyRecord)[index])
+      : [];
+
+  if (rows.length !== 7) {
+    throw new Error(`Subwave schedule must have exactly 7 days; received ${rows.length}.`);
+  }
+
+  const showIds = subwaveShowIds(settings);
+  const invalidSlots: Array<{ day: number; hour: number; showId: unknown }> = [];
+  const normalized: Record<string, string[]> = {};
+
+  rows.forEach((day, dayIndex) => {
+    if (!Array.isArray(day) || day.length !== 24) {
+      throw new Error(`Subwave schedule day ${dayIndex} must have exactly 24 hourly slots; received ${Array.isArray(day) ? day.length : typeof day}.`);
+    }
+
+    normalized[String(dayIndex)] = day.map((showId, hourIndex) => {
+      if (typeof showId !== "string" || !showIds.has(showId)) {
+        invalidSlots.push({ day: dayIndex, hour: hourIndex, showId });
+      }
+      return String(showId);
+    });
+  });
+
+  if (invalidSlots.length > 0) {
+    const preview = invalidSlots.slice(0, 8).map((slot) => `${slot.day}:${slot.hour}=${String(slot.showId)}`).join(", ");
+    throw new Error(`Subwave schedule contains ${invalidSlots.length} invalid slots: ${preview}`);
+  }
+
+  return normalized;
+}
+
+function scheduleAt(settings: AnyRecord, day: number, hour: number) {
+  const schedule = settings.schedule;
+  if (!schedule) return undefined;
+  if (Array.isArray(schedule)) return Array.isArray(schedule[day]) ? schedule[day][hour] : undefined;
+  return Array.isArray(schedule[String(day)]) ? schedule[String(day)][hour] : undefined;
+}
+
+function diffSubwaveSchedule(before: AnyRecord, after: AnyRecord, intended?: Record<string, string[]>) {
+  const differences: Array<{ day: number; hour: number; before?: unknown; after?: unknown }> = [];
+  const droppedSlots: Array<{ day: number; hour: number; intended: string; actual?: unknown }> = [];
+
+  for (let day = 0; day < 7; day += 1) {
+    for (let hour = 0; hour < 24; hour += 1) {
+      const beforeValue = scheduleAt(before, day, hour);
+      const afterValue = scheduleAt(after, day, hour);
+      if (beforeValue !== afterValue) differences.push({ day, hour, before: beforeValue, after: afterValue });
+      const intendedValue = intended?.[String(day)]?.[hour];
+      if (intendedValue !== undefined && afterValue !== intendedValue) {
+        droppedSlots.push({ day, hour, intended: intendedValue, actual: afterValue });
+      }
+    }
+  }
+
+  return { differences, droppedSlots };
 }
 
 function normalizeNavidromeSearch(response: AnyRecord) {
@@ -1543,6 +1673,88 @@ export async function subwaveRecentTracks(limit = 20) {
     ]), viewState({ empty: tracks.length === 0, emptyLabel: "No recent Subwave tracks", warnings })),
     tracks,
     playlists: playlistRows,
+    warnings,
+  });
+}
+
+export async function subwaveUpsertShow(show: AnyRecord) {
+  requireRequestToolsEnabled();
+
+  const app = getApp("subwave");
+  const before = await subwaveSettings(app);
+  validateSubwaveShow(show, before);
+
+  const writeResult = await subwaveUpsertShowRaw(app, show);
+  const after = await subwaveSettings(app);
+  const showNames = summarizeSubwaveShows(after);
+  const upserted = subwaveShowRows(after).find((candidate) => firstString(candidate.id) === firstString(show.id));
+  const warnings = upserted ? [] : [`Subwave settings read-back did not include show ${firstString(show.id) ?? "unknown"}.`];
+  const summary = warnings.length === 0
+    ? `Upserted Subwave show ${firstString(upserted?.name, show.name) ?? firstString(show.id) ?? "show"}; ${showNames.length} shows are configured.`
+    : `Subwave show write completed with ${warnings.length} warning.`;
+
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave Show Upsert", summary, [
+      {
+        id: "shows",
+        title: "Shows",
+        tone: warnings.length > 0 ? "warning" : "ok",
+        metrics: [{ label: "Shows", value: showNames.length }],
+        items: showNames.map((row) => ({
+          label: row.name,
+          value: row.id,
+          tone: row.id === firstString(show.id) ? "ok" as const : "info" as const,
+        })),
+      },
+    ]), viewState({ warnings })),
+    show: upserted,
+    showNames,
+    writeResult,
+    warnings,
+  });
+}
+
+export async function subwaveUpdateWeeklySchedule(schedule: unknown) {
+  requireRequestToolsEnabled();
+
+  const app = getApp("subwave");
+  const before = await subwaveSettings(app);
+  const normalizedSchedule = normalizeSubwaveSchedule(schedule, before);
+
+  const writeResult = await subwaveUpdateScheduleRaw(app, normalizedSchedule);
+  const after = await subwaveSettings(app);
+  const { differences, droppedSlots } = diffSubwaveSchedule(before, after, normalizedSchedule);
+  const showNames = summarizeSubwaveShows(after);
+  const warnings = droppedSlots.map((slot) => `Dropped ${slot.day}:${slot.hour} intended ${slot.intended}; read back ${String(slot.actual)}`);
+  const summary = warnings.length === 0
+    ? `Updated Subwave weekly schedule with ${differences.length} changed slots; ${showNames.length} shows are configured.`
+    : `Subwave schedule write completed with ${droppedSlots.length} dropped or mismatched slots.`;
+
+  return toSummary({
+    summary,
+    view: withViewState(mediaView("Subwave Schedule Update", summary, [
+      {
+        id: "schedule",
+        title: "Schedule",
+        tone: warnings.length > 0 ? "warning" : "ok",
+        metrics: [
+          { label: "Changed Slots", value: differences.length },
+          { label: "Dropped Slots", value: droppedSlots.length, tone: droppedSlots.length > 0 ? "warning" : "ok" },
+          { label: "Shows", value: showNames.length },
+        ],
+        items: differences.slice(0, 24).map((slot) => ({
+          label: `${slot.day}:${String(slot.hour).padStart(2, "0")}`,
+          value: String(slot.after ?? ""),
+          detail: slot.before === undefined ? undefined : `was ${String(slot.before)}`,
+          tone: "info" as const,
+        })),
+      },
+    ]), viewState({ warnings })),
+    showNames,
+    scheduleDifferences: differences,
+    droppedSlots,
+    writeResult,
     warnings,
   });
 }

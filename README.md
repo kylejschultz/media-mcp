@@ -256,6 +256,8 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `subwave_streams` - show Subwave stream descriptor plus PLS/M3U tune-in files.
 - `subwave_search` - search Subwave's admin library endpoint for queue-ready tracks.
 - `subwave_recent` - show recently added Subwave tracks and playlist summary.
+- `subwave_upsert_show` - upsert one Subwave show through the admin API after validating show moods.
+- `subwave_update_schedule` - replace the 7 day x 24 hour Subwave weekly schedule after validating show ids.
 - `jellyfin_system_info` - show Jellyfin server version and basic system information.
 - `jellyfin_library_counts` - show Jellyfin media item counts.
 - `jellyfin_active_sessions` - show active Jellyfin sessions and playback summary.
@@ -268,7 +270,7 @@ SABnzbd has a different API shape from the Arr apps, so its queue/history tools 
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
 beets-flask support is read-only and uses `BEETS_FLASK_URL`. slskd support is read-only and uses `SLSKD_URL` plus `SLSKD_API_KEY`.
 Navidrome support is read-only in the current release and uses `NAVIDROME_URL`, `NAVIDROME_USER`, and `NAVIDROME_PASS` against the Subsonic API.
-Subwave public station reads use `SUBWAVE_URL`. Admin-read tools such as `subwave_search` and `subwave_recent` also require `SUBWAVE_ADMIN_USER` and `SUBWAVE_ADMIN_PASS`.
+Subwave public station reads use `SUBWAVE_URL`. Admin-read and write tools such as `subwave_search`, `subwave_recent`, `subwave_upsert_show`, and `subwave_update_schedule` also require `SUBWAVE_ADMIN_USER` and `SUBWAVE_ADMIN_PASS`.
 The default runtime is read-only. Search and preview tools are safe by default;
 request/write tools refuse to run unless `ALLOW_REQUESTS=true`.
 Future service-specific write tools must stay behind explicit gates such as

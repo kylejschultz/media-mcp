@@ -44,6 +44,8 @@ import {
   subwaveStateSummary,
   subwaveStatus,
   subwaveStreams,
+  subwaveUpdateWeeklySchedule,
+  subwaveUpsertShow,
   systemStatus,
   wantedMissingNormalized,
 } from "./media.js";
@@ -98,6 +100,15 @@ const requestFollowInput = {
   monitorMode: z.string().optional(),
   polls: z.number().int().min(0).default(0),
   pageSize: z.number().int().min(1).max(200).default(100),
+};
+const subwaveShowInput = {
+  show: z.object({
+    id: z.string().min(1),
+    name: z.string().min(1),
+  }).passthrough(),
+};
+const subwaveScheduleInput = {
+  schedule: z.any(),
 };
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;
@@ -584,6 +595,26 @@ export function createMediaMcpServer() {
       },
     },
     tool(({ limit }) => subwaveRecentTracks(limit)),
+  );
+
+  server.registerTool(
+    "subwave_upsert_show",
+    {
+      title: "Subwave Upsert Show",
+      description: "Upsert one Subwave show through POST /api/shows using admin credentials. Requires ALLOW_REQUESTS=true.",
+      inputSchema: subwaveShowInput,
+    },
+    tool(({ show }) => subwaveUpsertShow(show)),
+  );
+
+  server.registerTool(
+    "subwave_update_schedule",
+    {
+      title: "Subwave Update Schedule",
+      description: "Replace the Subwave weekly schedule through PUT /api/schedule after validating a 7 day x 24 hour grid. Requires ALLOW_REQUESTS=true.",
+      inputSchema: subwaveScheduleInput,
+    },
+    tool(({ schedule }) => subwaveUpdateWeeklySchedule(schedule)),
   );
 
   server.registerTool(

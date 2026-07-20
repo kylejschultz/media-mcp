@@ -1,5 +1,5 @@
 import type { AppConfig } from "./config.js";
-import { arrGet, arrPost, arrPut, beetsGet, jellyfinGet, navidromeGet, sabGet, slskdGet, subwaveAdminGet, subwaveGet, subwaveText } from "./http.js";
+import { arrGet, arrPost, arrPut, beetsGet, jellyfinGet, navidromeGet, sabGet, slskdGet, subwaveAdminGet, subwaveAdminPost, subwaveAdminPut, subwaveGet, subwaveText } from "./http.js";
 import type { AnyRecord } from "./types.js";
 
 export async function arrHealth(app: AppConfig) {
@@ -149,6 +149,18 @@ export async function subwaveSession(app: AppConfig) {
 
 export async function subwaveStats(app: AppConfig) {
   return subwaveAdminGet<AnyRecord>(app, "api/stats");
+}
+
+export async function subwaveSettings(app: AppConfig) {
+  return subwaveAdminGet<AnyRecord>(app, "api/settings");
+}
+
+export async function subwaveUpsertShow(app: AppConfig, show: AnyRecord) {
+  return subwaveAdminPost<AnyRecord>(app, "api/shows", { show });
+}
+
+export async function subwaveUpdateSchedule(app: AppConfig, schedule: AnyRecord) {
+  return subwaveAdminPut<AnyRecord>(app, "api/schedule", { schedule });
 }
 
 export async function subwaveSearch(app: AppConfig, query: string) {

@@ -210,6 +210,40 @@ export async function subwaveAdminGet<T>(app: AppConfig, path: string, params: R
   return readJson<T>(response, app.label);
 }
 
+export async function subwaveAdminPost<T>(app: AppConfig, path: string, body: unknown) {
+  if (!app.url) throw new Error(`${app.label} is not configured`);
+
+  const url = new URL(`/${trimSlashes(path)}`, app.url);
+  const response = await fetch(url, {
+    method: "POST",
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: basicAuthHeader(app),
+    },
+    body: JSON.stringify(body),
+  });
+  return readJson<T>(response, app.label);
+}
+
+export async function subwaveAdminPut<T>(app: AppConfig, path: string, body: unknown) {
+  if (!app.url) throw new Error(`${app.label} is not configured`);
+
+  const url = new URL(`/${trimSlashes(path)}`, app.url);
+  const response = await fetch(url, {
+    method: "PUT",
+    signal: AbortSignal.timeout(10_000),
+    headers: {
+      Accept: "application/json",
+      "Content-Type": "application/json",
+      Authorization: basicAuthHeader(app),
+    },
+    body: JSON.stringify(body),
+  });
+  return readJson<T>(response, app.label);
+}
+
 export async function subwaveText(app: AppConfig, path: string) {
   if (!app.url) throw new Error(`${app.label} is not configured`);
 
