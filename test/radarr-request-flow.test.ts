@@ -75,6 +75,7 @@ let queueRecords: unknown[] = [];
 let historyRecords: unknown[] = [];
 let missingRecords: unknown[] = [];
 let subwaveSettings: any = {};
+let subwaveScheduleConfig: any = {};
 const failedRequests = new Set<string>();
 
 function jsonResponse(value: unknown, status = 200) {
@@ -92,11 +93,17 @@ beforeEach(() => {
   historyRecords = [];
   missingRecords = [];
   subwaveSettings = {
+    allowedMoods: ["calm", "energetic", "night"],
+    personas: [
+      { id: "p_default", name: "Default Persona", mood: "calm" },
+      { id: "p_drive", name: "Drive Persona", mood: "energetic" },
+    ],
+  };
+  subwaveScheduleConfig = {
     shows: [
       { id: "s_default", name: "Default Show", moods: ["calm"], topic: "Default lane" },
       { id: "s_drive", name: "Drive Time", moods: ["energetic"], topic: "Drive lane" },
     ],
-    allowedMoods: ["calm", "energetic", "night"],
     schedule: Object.fromEntries(Array.from({ length: 7 }, (_, day) => [String(day), Array.from({ length: 24 }, () => "s_default")])),
   };
   failedRequests.clear();
@@ -244,18 +251,19 @@ globalThis.fetch = async (input, init) => {
         return jsonResponse(subwaveSettings);
       case "/api/shows":
         if (method !== "POST") return jsonResponse({ error: "Expected POST" }, 405);
-        subwaveSettings = {
-          ...subwaveSettings,
+        subwaveScheduleConfig = {
+          ...subwaveScheduleConfig,
           shows: [
-            ...subwaveSettings.shows.filter((show: any) => show.id !== (call.body as any).show.id),
+            ...subwaveScheduleConfig.shows.filter((show: any) => show.id !== (call.body as any).show.id),
             (call.body as any).show,
           ],
         };
         return jsonResponse({ ok: true, show: (call.body as any).show });
       case "/api/schedule":
+        if (method === "GET") return jsonResponse(subwaveScheduleConfig);
         if (method !== "PUT") return jsonResponse({ error: "Expected PUT" }, 405);
-        subwaveSettings = {
-          ...subwaveSettings,
+        subwaveScheduleConfig = {
+          ...subwaveScheduleConfig,
           schedule: (call.body as any).schedule,
         };
         return jsonResponse({ ok: true, schedule: (call.body as any).schedule });

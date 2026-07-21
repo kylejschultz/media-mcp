@@ -36,7 +36,7 @@ import {
   subwaveNowPlaying as subwaveNowPlayingRaw,
   subwavePlaylists,
   subwaveRecent as subwaveRecentRaw,
-  subwaveSchedule,
+  subwaveScheduleConfig,
   subwaveSearch as subwaveSearchRaw,
   subwaveSession,
   subwaveSettings,
@@ -1681,11 +1681,11 @@ export async function subwaveUpsertShow(show: AnyRecord) {
   requireRequestToolsEnabled();
 
   const app = getApp("subwave");
-  const before = await subwaveSettings(app);
-  validateSubwaveShow(show, before);
+  const settings = await subwaveSettings(app);
+  validateSubwaveShow(show, settings);
 
   const writeResult = await subwaveUpsertShowRaw(app, show);
-  const after = await subwaveSettings(app);
+  const after = await subwaveScheduleConfig(app);
   const showNames = summarizeSubwaveShows(after);
   const upserted = subwaveShowRows(after).find((candidate) => firstString(candidate.id) === firstString(show.id));
   const warnings = upserted ? [] : [`Subwave settings read-back did not include show ${firstString(show.id) ?? "unknown"}.`];
@@ -1719,11 +1719,11 @@ export async function subwaveUpdateWeeklySchedule(schedule: unknown) {
   requireRequestToolsEnabled();
 
   const app = getApp("subwave");
-  const before = await subwaveSettings(app);
+  const before = await subwaveScheduleConfig(app);
   const normalizedSchedule = normalizeSubwaveSchedule(schedule, before);
 
   const writeResult = await subwaveUpdateScheduleRaw(app, normalizedSchedule);
-  const after = await subwaveSettings(app);
+  const after = await subwaveScheduleConfig(app);
   const { differences, droppedSlots } = diffSubwaveSchedule(before, after, normalizedSchedule);
   const showNames = summarizeSubwaveShows(after);
   const warnings = droppedSlots.map((slot) => `Dropped ${slot.day}:${slot.hour} intended ${slot.intended}; read back ${String(slot.actual)}`);

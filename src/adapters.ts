@@ -143,6 +143,10 @@ export async function subwaveSchedule(app: AppConfig) {
   return subwaveGet<AnyRecord>(app, "api/schedule");
 }
 
+export async function subwaveScheduleConfig(app: AppConfig) {
+  return subwaveAdminGet<AnyRecord>(app, "api/schedule");
+}
+
 export async function subwaveSession(app: AppConfig) {
   return subwaveGet<AnyRecord>(app, "api/session");
 }
