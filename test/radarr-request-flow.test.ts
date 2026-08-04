@@ -958,6 +958,28 @@ describe("Request follow status", () => {
     assert.equal(result.view.state.kind, "loading");
   });
 
+  it("ignores movie imports older than the request timestamp", async () => {
+    historyRecords = [
+      {
+        sourceTitle: "Test Movie.2026.1080p.WEB-DL",
+        eventType: "downloadFolderImported",
+        date: "2026-06-29T07:00:00Z",
+      },
+    ];
+
+    const result = await media.requestFollowStatus({
+      service: "radarr",
+      title: "Test Movie",
+      tmdbId: 123,
+      requestedAt: "2026-06-29T08:00:00Z",
+    }) as any;
+
+    assert.equal(result.followStatus.phase, "requested");
+    assert.equal(result.followStatus.complete, false);
+    assert.equal(result.followStatus.historyCount.imported, 0);
+    assert.equal(result.view.state.kind, "loading");
+  });
+
   it("reports unresolved failed movie requests as terminal errors", async () => {
     historyRecords = [
       {

@@ -2601,6 +2601,7 @@ type RequestFollowInput = {
   year?: number;
   expectedEpisodeCount?: number;
   monitorMode?: string;
+  requestedAt?: string;
   polls?: number;
   pageSize?: number;
 };
@@ -3130,8 +3131,23 @@ function followItems(result: AnyRecord, serviceName: string, track: RequestFollo
   return String(track.title ?? "") ? items.filter((item: AnyRecord) => titleMatchesFollow(item?.title, track)) : [];
 }
 
-function firstFollowItem(result: AnyRecord, serviceName: string, track: RequestFollowInput) {
-  return followItems(result, serviceName, track)[0];
+function timestampMs(value: unknown) {
+  const parsed = Date.parse(String(value ?? ""));
+  return Number.isFinite(parsed) ? parsed : undefined;
+}
+
+function itemAtOrAfter(item: AnyRecord, sinceMs?: number) {
+  if (sinceMs === undefined) return true;
+  const itemMs = timestampMs(item.date ?? item.completed ?? item.time);
+  return itemMs !== undefined && itemMs >= sinceMs;
+}
+
+function followItemsSince(result: AnyRecord, serviceName: string, track: RequestFollowInput, sinceMs?: number) {
+  return followItems(result, serviceName, track).filter((item) => itemAtOrAfter(item, sinceMs));
+}
+
+function firstFollowItemSince(result: AnyRecord, serviceName: string, track: RequestFollowInput, sinceMs?: number) {
+  return followItemsSince(result, serviceName, track, sinceMs)[0];
 }
 
 function followStatusView(args: {
@@ -3178,6 +3194,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     service,
     title,
     expectedEpisodeCount: Number(input.expectedEpisodeCount) || undefined,
+    requestedAt: input.requestedAt,
     polls: Number(input.polls ?? 0),
   };
   const serviceLabel = service === "sonarr" ? "Sonarr" : "Radarr";
@@ -3191,13 +3208,14 @@ export async function requestFollowStatus(input: RequestFollowInput) {
     recentActivity("sabnzbd", pageSize).catch((error) => ({ error })),
   ]);
 
+  const requestedAtMs = timestampMs(track.requestedAt);
   const sabQueueItems = followItems(sabQueue, "sabnzbd", track);
   const arrQueueItems = followItems(arrQueue, service, track);
   const activeItems = [...arrQueueItems, ...sabQueueItems];
   const sabQueueItem = sabQueueItems[0];
   const arrQueueItem = arrQueueItems[0];
-  const arrItems = followItems(arrHistory, service, track);
-  const sabHistoryItem = firstFollowItem(sabHistory, "sabnzbd", track);
+  const arrItems = followItemsSince(arrHistory, service, track, requestedAtMs);
+  const sabHistoryItem = firstFollowItemSince(sabHistory, "sabnzbd", track, requestedAtMs);
   const importedItems = arrItems.filter((item) => String(item?.eventType ?? "").toLowerCase() === "downloadfolderimported");
   const imported = importedItems[0];
   const failed = arrItems.find((item) => String(item?.eventType ?? "").toLowerCase().includes("fail"))
@@ -3327,6 +3345,7 @@ export async function requestFollowStatus(input: RequestFollowInput) {
       sabnzbd: sabHistoryItem ? 1 : 0,
       imported: importedCount,
     },
+    requestedAt: track.requestedAt,
     polls,
     nextPollRecommended: !terminal,
     pollDelaySeconds: terminal ? undefined : Math.min(60, 5 + polls * 5),
