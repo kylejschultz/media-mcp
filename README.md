@@ -64,12 +64,23 @@ services:
       - TZ=America/Los_Angeles
       - MEDIA_MCP_TRANSPORT=http
       - MEDIA_MCP_HTTP_PORT=3000
+      # Optional: enable only when this MCP endpoint is trusted/private.
+      # - MUSIC_AUDIT_ENABLED=true
+      # - MUSIC_AUDIT_ROOT=/music-library
+      # - MUSIC_AUDIT_CACHE_DIR=/config/music-audit
+      # - MUSIC_AUDIT_LOW_RESOLUTION_PX=600
+      # - MUSIC_AUDIT_CONCURRENCY=4
+      # - MUSIC_AUDIT_COOLDOWN_SECONDS=300
+      # - MUSIC_AUDIT_MAX_FILES=100000
+      # - MUSIC_AUDIT_MAX_IMAGE_BYTES=33554432
       # Optional: restrict browser clients instead of allowing any origin.
       # - MEDIA_MCP_ALLOWED_ORIGINS=http://10.10.10.10:3000
     ports:
       - "3000:3000"
     volumes:
       - /mnt/user/appdata/media-stack/media-mcp:/config
+      # Required only when MUSIC_AUDIT_ENABLED=true.
+      # - /mnt/user/media-stack/music:/music-library:ro
     networks:
       - docker-network
     restart: unless-stopped
@@ -78,6 +89,10 @@ networks:
   docker-network:
     external: true
 ```
+
+The HTTP transport currently has no built-in authentication. Enable the music
+library audit only when the MCP endpoint is restricted to a trusted/private
+network or authenticated upstream; otherwise leave `MUSIC_AUDIT_ENABLED` unset.
 
 If the GHCR package is private, log in on Unraid first:
 
@@ -250,6 +265,12 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `navidrome_status` - show read-only Navidrome Subsonic reachability, scan, and music-folder status.
 - `navidrome_search` - search Navidrome artists, albums, and songs through Subsonic `search3`.
 - `navidrome_scan_status` - show Navidrome scan state, counts, and last scan time.
+- `music_audit_capabilities` - report audit configuration, root readability, cache writability, and positively verified read-only mount status without enumerating library files or write-probing.
+- `music_audit_start` - start one process-wide read-only scan against the fixed configured music root when its cache is writable; repeated starts return the active scan.
+- `music_audit_status` - show current scan phase, discovered/processed/failure counts, and the latest completed snapshot reference.
+- `music_audit_summary` - return compact counts from the latest completed snapshot.
+- `music_audit_issues` - page and filter objective findings and clearly labeled review candidates.
+- `music_album_audit_detail` - return metadata, artwork hashes/dimensions, and findings for an opaque album ID from the current snapshot.
 - `subwave_status` - show read-only Subwave station health, now-playing, queue, and admin-read availability.
 - `subwave_now_playing` - show current Subwave track, station context, DJ persona, listeners, and stream descriptor.
 - `subwave_state` - show Subwave current queue, recent history, DJ log, and station state.

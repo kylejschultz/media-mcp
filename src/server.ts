@@ -50,6 +50,7 @@ import {
   wantedMissingNormalized,
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
+import { MUSIC_AUDIT_ISSUE_TYPES, musicAudit } from "./music-audit.js";
 import { serverVersion } from "./version.js";
 
 const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin", "beets-flask", "slskd", "navidrome", "subwave"]);
@@ -111,6 +112,7 @@ const subwaveShowInput = {
 const subwaveScheduleInput = {
   schedule: z.any(),
 };
+const musicAuditIssueType = z.enum(MUSIC_AUDIT_ISSUE_TYPES);
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;
 
@@ -616,6 +618,69 @@ export function createMediaMcpServer() {
       inputSchema: subwaveScheduleInput,
     },
     tool(({ schedule }) => subwaveUpdateWeeklySchedule(schedule)),
+  );
+
+  server.registerTool(
+    "music_audit_capabilities",
+    {
+      title: "Music Audit Capabilities",
+      description: "Report read-only music audit configuration and safety readiness without enumerating the library.",
+    },
+    tool(() => musicAudit.capabilities()),
+  );
+
+  server.registerTool(
+    "music_audit_start",
+    {
+      title: "Start Music Audit",
+      description: "Start one read-only metadata and artwork audit against the fixed configured music root.",
+    },
+    tool(() => musicAudit.start()),
+  );
+
+  server.registerTool(
+    "music_audit_status",
+    {
+      title: "Music Audit Status",
+      description: "Return process-wide music audit scan state and the latest completed scan reference.",
+    },
+    tool(() => musicAudit.status()),
+  );
+
+  server.registerTool(
+    "music_audit_summary",
+    {
+      title: "Music Audit Summary",
+      description: "Return a compact summary of the latest completed music audit snapshot.",
+    },
+    tool(() => musicAudit.summary()),
+  );
+
+  server.registerTool(
+    "music_audit_issues",
+    {
+      title: "Music Audit Issues",
+      description: "Return bounded, filterable findings from the latest completed music audit snapshot.",
+      inputSchema: {
+        type: musicAuditIssueType.optional(),
+        severity: z.enum(["issue", "candidate"]).optional(),
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(100).default(25),
+      },
+    },
+    tool((args) => musicAudit.issues(args)),
+  );
+
+  server.registerTool(
+    "music_album_audit_detail",
+    {
+      title: "Music Album Audit Detail",
+      description: "Return tracks, artwork, and findings for one opaque scanner-generated album ID.",
+      inputSchema: {
+        albumId: z.string().regex(/^alb_[a-f0-9]{24}$/),
+      },
+    },
+    tool(({ albumId }) => musicAudit.albumDetail(albumId)),
   );
 
   server.registerTool(
