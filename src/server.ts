@@ -672,6 +672,20 @@ export function createMediaMcpServer() {
   );
 
   server.registerTool(
+    "music_genre_distribution",
+    {
+      title: "Music Genre Distribution",
+      description: "Return paginated exact raw genre tags, conservative normalized keys, counts, and representative albums from the latest completed music audit snapshot.",
+      inputSchema: {
+        search: z.string().optional(),
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(200).default(50),
+      },
+    },
+    tool((args) => musicAudit.genreDistribution(args)),
+  );
+
+  server.registerTool(
     "music_album_audit_detail",
     {
       title: "Music Album Audit Detail",

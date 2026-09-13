@@ -225,16 +225,103 @@ describe("music audit pagination and MCP contract", () => {
     await assert.rejects(service.albumDetail("alb_ffffffffffffffffffffffff"), /not found/);
   });
 
-  it("registers all six read-only audit tools with bounded schemas", async () => {
+  it("returns exact raw genre rows with deduplicated counts, normalization, search, and pagination", async () => {
+    const files = await fixture();
+    await mkdir(files.cacheDir);
+    const completed = snapshot(files.config, "genre-scan", "2026-01-01T00:00:00.000Z");
+    completed.albums = [
+      {
+        id: "alb_0123456789abcdef01234567",
+        keySource: "metadata",
+        album: "First Album",
+        albumArtist: "First Artist",
+        year: 2020,
+        directories: ["First Artist/First Album"],
+        genres: [],
+        tracks: [
+          { path: "First Artist/First Album/01.flac", directory: "First Artist/First Album", genres: ["Rock", "Rock", "  ＲＯＣＫ \t ", "Jazz; Blues", "Cafe\u0301"], embeddedArt: [] },
+          { path: "First Artist/First Album/02.flac", directory: "First Artist/First Album", genres: ["Rock", "Café"], embeddedArt: [] },
+        ],
+        sidecars: [],
+        issueIds: [],
+      },
+      {
+        id: "alb_abcdefabcdefabcdefabcdef",
+        keySource: "metadata",
+        album: "Second Album",
+        albumArtist: "Second Artist",
+        year: 2021,
+        directories: ["Second Artist/Second Album"],
+        genres: [],
+        tracks: [{ path: "Second Artist/Second Album/01.flac", directory: "Second Artist/Second Album", genres: ["Rock", "Jazz; Blues"], embeddedArt: [] }],
+        sidecars: [],
+        issueIds: [],
+      },
+    ];
+    completed.summary = { tracks: 3, albums: 2, issues: 0, candidates: 0, byType: {} };
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(completed));
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+
+    const page = await service.genreDistribution({ offset: 1, limit: 1 }) as any;
+    assert.equal(page.scanId, "genre-scan");
+    assert.equal(page.total, 5);
+    assert.equal(page.totalUniqueGenres, 5);
+    assert.equal(page.totalTaggedTracks, 3);
+    assert.equal(page.totalAlbumsRepresented, 2);
+    assert.equal(page.items.length, 1);
+    assert.equal(page.items[0].rawGenre, "Jazz; Blues");
+    assert.equal(page.items[0].trackCount, 2);
+    assert.equal(page.items[0].albumCount, 2);
+    assert.equal(page.items[0].representativeAlbums.length, 2);
+
+    const rocks = await service.genreDistribution({ search: "ROCK" }) as any;
+    assert.deepEqual(rocks.items.map((row: any) => row.rawGenre), ["Rock", "  ＲＯＣＫ \t "]);
+    assert.ok(rocks.items.every((row: any) => row.normalizedKey === "rock"));
+    assert.equal(rocks.items[0].trackCount, 3, "duplicate raw entries on one track count once");
+    assert.equal(rocks.items[0].representativeAlbums[0].album, "First Album");
+
+    const accents = await service.genreDistribution({ search: "café" }) as any;
+    assert.equal(accents.total, 2);
+    assert.deepEqual(new Set(accents.items.map((row: any) => row.rawGenre)), new Set(["Cafe\u0301", "Café"]));
+    assert.ok(accents.items.every((row: any) => row.normalizedKey === "café"));
+
+    const compounds = await service.genreDistribution({ search: "jazz" }) as any;
+    assert.deepEqual(compounds.items.map((row: any) => row.rawGenre), ["Jazz; Blues"]);
+    const bounded = await service.genreDistribution({ offset: -3, limit: 999 }) as any;
+    assert.equal(bounded.offset, 0);
+    assert.equal(bounded.limit, 200);
+    assertScalarViewMetrics(page.view);
+  });
+
+  it("returns an empty genre distribution when no completed snapshot exists", async () => {
+    const files = await fixture();
+    const result = await new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath }).genreDistribution({}) as any;
+    assert.equal(result.scanId, null);
+    assert.deepEqual(result.items, []);
+    assert.equal(result.total, 0);
+    assert.equal(result.totalUniqueGenres, 0);
+    assert.equal(result.totalTaggedTracks, 0);
+    assert.equal(result.totalAlbumsRepresented, 0);
+    assert.equal(result.offset, 0);
+    assert.equal(result.limit, 50);
+    assert.equal(result.view.schema, "media-mcp.view.v1");
+    assert.equal(result.view.state.kind, "empty");
+    assertScalarViewMetrics(result.view);
+  });
+
+  it("registers all seven read-only audit tools with bounded schemas", async () => {
     const server = createMediaMcpServer();
     const client = new Client({ name: "music-audit-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const listed = await client.listTools();
     const tools = new Map(listed.tools.map((tool) => [tool.name, tool]));
-    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_album_audit_detail"]) assert.ok(tools.has(name), name);
+    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_detail"]) assert.ok(tools.has(name), name);
     assert.equal((tools.get("music_audit_start")?.inputSchema as any)?.properties && Object.keys((tools.get("music_audit_start")?.inputSchema as any).properties).length, 0);
     assert.equal((tools.get("music_audit_issues")?.inputSchema as any).properties.limit.maximum, 100);
+    assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.offset.default, 0);
+    assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.limit.default, 50);
+    assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.limit.maximum, 200);
     await Promise.all([client.close(), server.close()]);
   });
 });
