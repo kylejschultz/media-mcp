@@ -4,6 +4,7 @@ import { access, lstat, mkdir, readFile, readdir, realpath, rename, stat, writeF
 import path from "node:path";
 import { disableTypes, imageSize, types as imageTypes } from "image-size";
 import { parseFile } from "music-metadata";
+import sharp from "sharp";
 import { toSummary } from "./results.js";
 import { mediaView, viewState, withViewState } from "./views.js";
 
@@ -17,6 +18,7 @@ disableTypes(imageTypes.filter((type) => !SUPPORTED_IMAGE_TYPES.has(type)));
 
 export type MusicAuditConfig = {
   enabled: boolean;
+  artworkPreviewEnabled: boolean;
   root: string;
   cacheDir: string;
   lowResolutionThreshold: number;
@@ -138,7 +140,46 @@ type SidecarsByDirectory = Map<string, ArtworkAudit[]>;
 type AuditDeps = {
   mountInfoPath?: string;
   scanner?: (config: MusicAuditConfig, scanId: string, startedAt: string, onProgress?: (progress: MusicAuditProgress) => void) => Promise<MusicAuditSnapshot>;
+  previewer?: (data: Buffer) => Promise<{ data: Buffer; originalWidth: number; originalHeight: number; width: number; height: number }>;
 };
+
+export type ArtworkPreview = {
+  metadata: {
+    albumId: string;
+    scanId: string;
+    albumArtist?: string;
+    albumTitle?: string;
+    source: "embedded" | "sidecar";
+    index: number;
+    original: { sha256: string; width: number; height: number };
+    preview: { width: number; height: number; bytes: number };
+    summary: string;
+    warnings: string[];
+    errors: string[];
+    checkedAt: string;
+  };
+  data: Buffer;
+};
+
+const PREVIEW_MAX_INPUT_PIXELS = 40_000_000;
+const PREVIEW_MAX_OUTPUT_BYTES = 1024 * 1024;
+const PREVIEW_CONCURRENCY = 2;
+let activePreviews = 0;
+
+async function renderArtworkPreview(data: Buffer) {
+  const input = sharp(data, { limitInputPixels: PREVIEW_MAX_INPUT_PIXELS, failOn: "error" });
+  const metadata = await input.metadata();
+  if (!metadata.width || !metadata.height) throw new Error("Artwork dimensions could not be decoded");
+  const result = await input
+    .rotate()
+    .resize({ width: 512, height: 512, fit: "inside", withoutEnlargement: true })
+    .flatten({ background: "#eeeeee" })
+    .jpeg({ quality: 82 })
+    .toBuffer({ resolveWithObject: true });
+  if (result.data.byteLength > PREVIEW_MAX_OUTPUT_BYTES) throw new Error(`Artwork preview exceeds ${PREVIEW_MAX_OUTPUT_BYTES} byte limit`);
+  if (!result.info.width || !result.info.height) throw new Error("Artwork preview dimensions could not be decoded");
+  return { data: result.data, originalWidth: metadata.width, originalHeight: metadata.height, width: result.info.width, height: result.info.height };
+}
 
 function envInteger(env: NodeJS.ProcessEnv, name: string, fallback: number, min: number, max: number) {
   const raw = env[name];
@@ -149,13 +190,18 @@ function envInteger(env: NodeJS.ProcessEnv, name: string, fallback: number, min:
   return value;
 }
 
+function envBoolean(env: NodeJS.ProcessEnv, name: string, fallback = false) {
+  const raw = (env[name] ?? String(fallback)).toLowerCase();
+  if (raw !== "true" && raw !== "false") throw new Error(`${name} must be true or false`);
+  return raw === "true";
+}
+
 export function musicAuditConfig(env: NodeJS.ProcessEnv = process.env): MusicAuditConfig {
-  const enabledRaw = (env.MUSIC_AUDIT_ENABLED ?? "false").toLowerCase();
-  if (enabledRaw !== "true" && enabledRaw !== "false") throw new Error("MUSIC_AUDIT_ENABLED must be true or false");
   const root = path.resolve(env.MUSIC_AUDIT_ROOT ?? "/music-library");
   const cacheDir = path.resolve(env.MUSIC_AUDIT_CACHE_DIR ?? "/config/music-audit");
   return {
-    enabled: enabledRaw === "true",
+    enabled: envBoolean(env, "MUSIC_AUDIT_ENABLED"),
+    artworkPreviewEnabled: envBoolean(env, "MUSIC_AUDIT_ARTWORK_PREVIEW_ENABLED"),
     root,
     cacheDir,
     lowResolutionThreshold: envInteger(env, "MUSIC_AUDIT_LOW_RESOLUTION_PX", 600, 100, 10_000),
@@ -253,6 +299,7 @@ export function aggregateMusicAudit(tracks: AuditedTrack[], sidecarsByDirectory:
       if (hashedSidecars.every((art) => !embeddedHashes.has(art.sha256))) add("art_embedded_sidecar_mismatch_candidate", "Embedded and sidecar artwork bytes differ; review may be useful");
     }
 
+    for (const track of group.tracks) track.genres = track.genres.filter((genre) => genre.trim().length > 0);
     const missingGenres = metadataReadableTracks.filter((track) => track.genres.length === 0);
     if (missingGenres.length > 0) add("genre_missing", `${missingGenres.length} track(s) have no genre`, missingGenres.map((track) => track.path));
     const genreSets = new Set(metadataReadableTracks.filter((track) => track.genres.length > 0).map((track) => track.genres.map((genre) => normalized(genre)).filter(Boolean).sort().join("|")));
@@ -383,7 +430,7 @@ export async function scanMusicLibrary(config: MusicAuditConfig, scanId: string,
         albumArtist: metadata.common.albumartist,
         artist: metadata.common.artist,
         year: metadata.common.year,
-        genres: metadata.common.genre ?? [],
+        genres: (metadata.common.genre ?? []).filter((genre) => genre.trim().length > 0),
         musicBrainzReleaseId: metadata.common.musicbrainz_albumid,
         embeddedArt,
       };
@@ -470,11 +517,13 @@ export class MusicAuditService {
   readonly config: MusicAuditConfig;
   private readonly mountInfoPath: string;
   private readonly scanner: NonNullable<AuditDeps["scanner"]>;
+  private readonly previewer: NonNullable<AuditDeps["previewer"]>;
 
   constructor(config = musicAuditConfig(), deps: AuditDeps = {}) {
     this.config = config;
     this.mountInfoPath = deps.mountInfoPath ?? "/proc/self/mountinfo";
     this.scanner = deps.scanner ?? scanMusicLibrary;
+    this.previewer = deps.previewer ?? renderArtworkPreview;
   }
 
   private get snapshotFile() { return path.join(this.config.cacheDir, "snapshot.json"); }
@@ -527,9 +576,11 @@ export class MusicAuditService {
       root: { path: this.config.root, canonicalPath, canonicalMatchesConfigured, readable },
       cache: { ...cache, snapshotSchemaVersion: MUSIC_AUDIT_SCHEMA_VERSION },
       support: { metadata: true, embeddedArtwork: true, sidecarArtwork: true, exactArtworkSha256: true, writesLibrary: false },
+      artworkPreview: { enabled: this.config.artworkPreviewEnabled, maxWidth: 512, maxHeight: 512, maxOutputBytes: PREVIEW_MAX_OUTPUT_BYTES, concurrency: PREVIEW_CONCURRENCY },
       thresholds: { lowResolutionPx: this.config.lowResolutionThreshold, concurrency: this.config.concurrency, cooldownSeconds: this.config.cooldownSeconds, maxFiles: this.config.maxFiles, maxImageBytes: this.config.maxImageBytes },
       readOnlyMount: mount,
       canStart: this.config.enabled && readable && canonicalMatchesConfigured && mount.verified && cache.writable,
+      canPreview: this.config.enabled && this.config.artworkPreviewEnabled && readable && canonicalMatchesConfigured && mount.verified,
     }, warnings);
   }
 
@@ -627,7 +678,7 @@ export class MusicAuditService {
     for (const album of this.snapshot.albums) {
       let albumTagged = false;
       for (const track of album.tracks) {
-        const trackGenres = new Set(track.genres);
+        const trackGenres = new Set(track.genres.filter((genre) => genre.trim().length > 0));
         if (trackGenres.size > 0) {
           totalTaggedTracks += 1;
           albumTagged = true;
@@ -674,6 +725,102 @@ export class MusicAuditService {
     if (!album) throw new Error("Album audit ID was not found in the current snapshot");
     const albumIssues = this.snapshot.issues.filter((item) => item.albumId === albumId);
     return response(`${album.albumArtist ?? "Unknown artist"} — ${album.album ?? album.directories[0] ?? "Unknown album"}`, { scanId: this.snapshot.scanId, album, issues: albumIssues, summaryData: { tracks: album.tracks.length, findings: albumIssues.length } }, this.snapshot.warnings, this.snapshot.errors);
+  }
+
+  private async verifiedSourcePath(relativePath: string, sizeLimit?: number) {
+    const rootLinkStat = await lstat(this.config.root);
+    if (rootLinkStat.isSymbolicLink()) throw new Error("Configured music root must not be a symlink");
+    const canonicalRoot = await realpath(this.config.root);
+    if (canonicalRoot !== this.config.root) throw new Error("Configured music root contains a symlinked path component");
+    const rootStat = await stat(canonicalRoot);
+    if (!rootStat.isDirectory()) throw new Error("Configured music root is not a directory");
+    const mount = readOnlyMountFor(canonicalRoot, await readFile(this.mountInfoPath, "utf8"));
+    if (!mount.verified) throw new Error("Configured music root is not positively verified read-only or contains a writable descendant mount");
+
+    const absolute = path.resolve(canonicalRoot, relativePath);
+    if (absolute === canonicalRoot || !absolute.startsWith(`${canonicalRoot}${path.sep}`)) throw new Error("Artwork source escapes the configured music root");
+    const linkStat = await lstat(absolute);
+    if (linkStat.isSymbolicLink()) throw new Error("Artwork source must not be a symlink");
+    const canonicalSource = await realpath(absolute);
+    if (canonicalSource !== absolute || !canonicalSource.startsWith(`${canonicalRoot}${path.sep}`)) throw new Error("Artwork source contains a symlink or escapes the configured music root");
+    const sourceStat = await stat(canonicalSource);
+    if (!sourceStat.isFile()) throw new Error("Artwork source is not a regular file");
+    if (sizeLimit !== undefined && sourceStat.size > sizeLimit) throw new Error(`Artwork exceeds ${sizeLimit} byte limit`);
+    return canonicalSource;
+  }
+
+  private async readVerified(relativePath: string, sizeLimit: number) {
+    const canonicalSource = await this.verifiedSourcePath(relativePath, sizeLimit);
+    const data = await readFile(canonicalSource);
+    if (sizeLimit !== undefined && data.byteLength > sizeLimit) throw new Error(`Artwork exceeds ${sizeLimit} byte limit`);
+    return data;
+  }
+
+  async artworkPreview(args: { albumId: string; source: "embedded" | "sidecar"; index?: number }): Promise<ArtworkPreview> {
+    if (!this.config.enabled || !this.config.artworkPreviewEnabled) throw new Error("Music artwork preview is disabled; set MUSIC_AUDIT_ARTWORK_PREVIEW_ENABLED=true on a trusted private MCP endpoint");
+    if (!Number.isInteger(args.index ?? 0) || (args.index ?? 0) < 0) throw new Error("Artwork index must be a nonnegative integer");
+    if (activePreviews >= PREVIEW_CONCURRENCY) throw new Error(`Music artwork preview concurrency limit (${PREVIEW_CONCURRENCY}) is active`);
+    activePreviews += 1;
+    try {
+      await this.initialize();
+      if (!this.snapshot) throw new Error("No completed music audit snapshot is available");
+      const album = this.snapshot.albums.find((candidate) => candidate.id === args.albumId);
+      if (!album) throw new Error("Album audit ID was not found in the current snapshot");
+      const index = Math.trunc(args.index ?? 0);
+      let expectedHash: string;
+      let bytes: Buffer;
+
+      if (args.source === "sidecar") {
+        const selected = album.sidecars[index];
+        if (!selected?.filename || !selected.sha256) throw new Error("Artwork index is out of range or was not readable in the current snapshot");
+        bytes = await this.readVerified(selected.filename, this.config.maxImageBytes);
+        expectedHash = selected.sha256;
+      } else {
+        const variants: Array<{ sha256: string; trackPath: string; pictureIndex: number }> = [];
+        const seen = new Set<string>();
+        for (const track of album.tracks) {
+          track.embeddedArt.forEach((art, pictureIndex) => {
+            if (art.sha256 && !seen.has(art.sha256!)) {
+              seen.add(art.sha256!);
+              variants.push({ sha256: art.sha256!, trackPath: track.path, pictureIndex });
+            }
+          });
+        }
+        const selected = variants[index];
+        if (!selected) throw new Error("Artwork index is out of range or was not readable in the current snapshot");
+        const audioPath = await this.verifiedSourcePath(selected.trackPath);
+        const metadata = await parseFile(audioPath, { duration: false, skipCovers: false });
+        const picture = metadata.common.picture?.[selected.pictureIndex];
+        if (!picture) throw new Error("Embedded artwork changed since the current snapshot");
+        bytes = Buffer.from(picture.data);
+        if (bytes.byteLength > this.config.maxImageBytes) throw new Error(`Artwork exceeds ${this.config.maxImageBytes} byte limit`);
+        expectedHash = selected.sha256;
+      }
+
+      const actualHash = createHash("sha256").update(bytes).digest("hex");
+      if (actualHash !== expectedHash) throw new Error("Artwork content changed since the current snapshot");
+      const preview = await this.previewer(bytes);
+      if (preview.data.byteLength > PREVIEW_MAX_OUTPUT_BYTES) throw new Error(`Artwork preview exceeds ${PREVIEW_MAX_OUTPUT_BYTES} byte limit`);
+      return {
+        metadata: {
+          albumId: args.albumId,
+          scanId: this.snapshot.scanId,
+          albumArtist: album.albumArtist,
+          albumTitle: album.album,
+          source: args.source,
+          index,
+          original: { sha256: expectedHash, width: preview.originalWidth, height: preview.originalHeight },
+          preview: { width: preview.width, height: preview.height, bytes: preview.data.byteLength },
+          summary: `Generated bounded JPEG preview for ${args.source} artwork ${index}`,
+          warnings: [],
+          errors: [],
+          checkedAt: new Date().toISOString(),
+        },
+        data: preview.data,
+      };
+    } finally {
+      activePreviews -= 1;
+    }
   }
 
   /** Test/controlled shutdown hook: waits for the current background scan. */

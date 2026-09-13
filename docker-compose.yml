@@ -8,6 +8,8 @@ services:
       - MEDIA_MCP_HTTP_PORT=3000
       # Optional: enable only when this MCP endpoint is trusted/private.
       # - MUSIC_AUDIT_ENABLED=true
+      # Artwork preview stays disabled by default; enable only on a trusted/private MCP endpoint.
+      # - MUSIC_AUDIT_ARTWORK_PREVIEW_ENABLED=false
       # - MUSIC_AUDIT_ROOT=/music-library
       # - MUSIC_AUDIT_CACHE_DIR=/config/music-audit
       # - MUSIC_AUDIT_LOW_RESOLUTION_PX=600

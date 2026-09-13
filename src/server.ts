@@ -50,7 +50,7 @@ import {
   wantedMissingNormalized,
 } from "./media.js";
 import { errorText, jsonText } from "./http.js";
-import { MUSIC_AUDIT_ISSUE_TYPES, musicAudit } from "./music-audit.js";
+import { MUSIC_AUDIT_ISSUE_TYPES, MusicAuditService, musicAudit } from "./music-audit.js";
 import { serverVersion } from "./version.js";
 
 const appName = z.enum(["sonarr", "radarr", "lidarr", "prowlarr", "sabnzbd", "jellyfin", "beets-flask", "slskd", "navidrome", "subwave"]);
@@ -126,7 +126,7 @@ function tool(handler: ToolHandler) {
   };
 }
 
-export function createMediaMcpServer() {
+export function createMediaMcpServer(auditService: MusicAuditService = musicAudit) {
   const server = new McpServer({
     name: "media-mcp",
     version: serverVersion,
@@ -626,7 +626,7 @@ export function createMediaMcpServer() {
       title: "Music Audit Capabilities",
       description: "Report read-only music audit configuration and safety readiness without enumerating the library.",
     },
-    tool(() => musicAudit.capabilities()),
+    tool(() => auditService.capabilities()),
   );
 
   server.registerTool(
@@ -635,7 +635,7 @@ export function createMediaMcpServer() {
       title: "Start Music Audit",
       description: "Start one read-only metadata and artwork audit against the fixed configured music root.",
     },
-    tool(() => musicAudit.start()),
+    tool(() => auditService.start()),
   );
 
   server.registerTool(
@@ -644,7 +644,7 @@ export function createMediaMcpServer() {
       title: "Music Audit Status",
       description: "Return process-wide music audit scan state and the latest completed scan reference.",
     },
-    tool(() => musicAudit.status()),
+    tool(() => auditService.status()),
   );
 
   server.registerTool(
@@ -653,7 +653,7 @@ export function createMediaMcpServer() {
       title: "Music Audit Summary",
       description: "Return a compact summary of the latest completed music audit snapshot.",
     },
-    tool(() => musicAudit.summary()),
+    tool(() => auditService.summary()),
   );
 
   server.registerTool(
@@ -668,7 +668,7 @@ export function createMediaMcpServer() {
         limit: z.number().int().min(1).max(100).default(25),
       },
     },
-    tool((args) => musicAudit.issues(args)),
+    tool((args) => auditService.issues(args)),
   );
 
   server.registerTool(
@@ -682,7 +682,7 @@ export function createMediaMcpServer() {
         limit: z.number().int().min(1).max(200).default(50),
       },
     },
-    tool((args) => musicAudit.genreDistribution(args)),
+    tool((args) => auditService.genreDistribution(args)),
   );
 
   server.registerTool(
@@ -694,7 +694,33 @@ export function createMediaMcpServer() {
         albumId: z.string().regex(/^alb_[a-f0-9]{24}$/),
       },
     },
-    tool(({ albumId }) => musicAudit.albumDetail(albumId)),
+    tool(({ albumId }) => auditService.albumDetail(albumId)),
+  );
+
+  server.registerTool(
+    "music_album_artwork_preview",
+    {
+      title: "Music Album Artwork Preview",
+      description: "Return a bounded JPEG preview for one snapshot-selected embedded or sidecar artwork variant. Requires an enabled trusted private endpoint.",
+      inputSchema: {
+        albumId: z.string().regex(/^alb_[a-f0-9]{24}$/),
+        source: z.enum(["embedded", "sidecar"]),
+        index: z.number().int().min(0).default(0),
+      },
+    },
+    async ({ albumId, source, index }) => {
+      try {
+        const preview = await auditService.artworkPreview({ albumId, source, index });
+        return {
+          content: [
+            { type: "text" as const, text: JSON.stringify(preview.metadata) },
+            { type: "image" as const, data: preview.data.toString("base64"), mimeType: "image/jpeg" },
+          ],
+        };
+      } catch (error) {
+        return errorText(error);
+      }
+    },
   );
 
   server.registerTool(

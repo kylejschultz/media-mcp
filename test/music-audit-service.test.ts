@@ -1,10 +1,12 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, readFile, readdir, symlink, writeFile } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import { mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import sharp from "sharp";
 import { MusicAuditService, type MusicAuditConfig, type MusicAuditSnapshot } from "../src/music-audit.js";
 import { createMediaMcpServer } from "../src/server.js";
 
@@ -15,7 +17,7 @@ async function fixture() {
   const mountInfoPath = path.join(temp, "mountinfo");
   await mkdir(root);
   await writeFile(mountInfoPath, `2 1 0:2 / ${root.replaceAll(" ", "\\040")} ro,nosuid - bind /host/music ro\n`);
-  const config: MusicAuditConfig = { enabled: true, root, cacheDir, lowResolutionThreshold: 600, concurrency: 4, cooldownSeconds: 300, maxFiles: 100_000, maxImageBytes: 32 * 1024 * 1024 };
+  const config: MusicAuditConfig = { enabled: true, artworkPreviewEnabled: false, root, cacheDir, lowResolutionThreshold: 600, concurrency: 4, cooldownSeconds: 300, maxFiles: 100_000, maxImageBytes: 32 * 1024 * 1024 };
   return { temp, root, cacheDir, mountInfoPath, config };
 }
 
@@ -56,6 +58,55 @@ function snapshot(config: MusicAuditConfig, scanId: string, startedAt: string, a
     warnings: [],
     errors: [],
   };
+}
+
+function sha256(data: Uint8Array) {
+  return createHash("sha256").update(data).digest("hex");
+}
+
+function syncSafe(value: number) {
+  return Buffer.from([(value >>> 21) & 0x7f, (value >>> 14) & 0x7f, (value >>> 7) & 0x7f, value & 0x7f]);
+}
+
+function id3WithPictures(pictures: Buffer[]) {
+  const frames = pictures.map((picture) => {
+    const body = Buffer.concat([Buffer.from([0]), Buffer.from("image/png\0"), Buffer.from([3, 0]), picture]);
+    const header = Buffer.alloc(10);
+    header.write("APIC", 0, "ascii");
+    header.writeUInt32BE(body.length, 4);
+    return Buffer.concat([header, body]);
+  });
+  const body = Buffer.concat(frames);
+  return Buffer.concat([Buffer.from("ID3\x03\x00\x00", "binary"), syncSafe(body.length), body]);
+}
+
+async function artworkFixture() {
+  const files = await fixture();
+  files.config.artworkPreviewEnabled = true;
+  const directory = path.join(files.root, "Artist", "Album");
+  await mkdir(directory, { recursive: true });
+  const first = await sharp({ create: { width: 800, height: 600, channels: 4, background: "#ff000080" } }).png().toBuffer();
+  const second = await sharp({ create: { width: 200, height: 300, channels: 3, background: "#0066ff" } }).png().toBuffer();
+  await writeFile(path.join(directory, "cover.png"), first);
+  await writeFile(path.join(directory, "back.png"), second);
+  await writeFile(path.join(directory, "01.mp3"), id3WithPictures([first, second]));
+  const completed = snapshot(files.config, "artwork-scan", "2026-01-01T00:00:00.000Z");
+  completed.albums[0]!.tracks = [{
+    path: "Artist/Album/01.mp3",
+    directory: "Artist/Album",
+    genres: ["Rock"],
+    embeddedArt: [
+      { source: "embedded", readable: true, sha256: sha256(first), width: 800, height: 600, mime: "image/png" },
+      { source: "embedded", readable: true, sha256: sha256(second), width: 200, height: 300, mime: "image/png" },
+    ],
+  }];
+  completed.albums[0]!.sidecars = [
+    { source: "sidecar", filename: "Artist/Album/cover.png", readable: true, sha256: sha256(first), width: 800, height: 600 },
+    { source: "sidecar", filename: "Artist/Album/back.png", readable: true, sha256: sha256(second), width: 200, height: 300 },
+  ];
+  await mkdir(files.cacheDir);
+  await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(completed));
+  return { ...files, completed, first, second, directory };
 }
 
 describe("music audit capabilities and lifecycle", () => {
@@ -253,12 +304,15 @@ describe("music audit pagination and MCP contract", () => {
         year: 2021,
         directories: ["Second Artist/Second Album"],
         genres: [],
-        tracks: [{ path: "Second Artist/Second Album/01.flac", directory: "Second Artist/Second Album", genres: ["Rock", "Jazz; Blues"], embeddedArt: [] }],
+        tracks: [
+          { path: "Second Artist/Second Album/01.flac", directory: "Second Artist/Second Album", genres: ["Rock", "Jazz; Blues"], embeddedArt: [] },
+          { path: "Second Artist/Second Album/02.flac", directory: "Second Artist/Second Album", genres: ["", "  \t "], embeddedArt: [] },
+        ],
         sidecars: [],
         issueIds: [],
       },
     ];
-    completed.summary = { tracks: 3, albums: 2, issues: 0, candidates: 0, byType: {} };
+    completed.summary = { tracks: 4, albums: 2, issues: 0, candidates: 0, byType: {} };
     await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(completed));
     const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
 
@@ -309,19 +363,125 @@ describe("music audit pagination and MCP contract", () => {
     assertScalarViewMetrics(result.view);
   });
 
-  it("registers all seven read-only audit tools with bounded schemas", async () => {
+  it("registers all eight read-only audit tools with bounded schemas", async () => {
     const server = createMediaMcpServer();
     const client = new Client({ name: "music-audit-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const listed = await client.listTools();
     const tools = new Map(listed.tools.map((tool) => [tool.name, tool]));
-    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_detail"]) assert.ok(tools.has(name), name);
+    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_detail", "music_album_artwork_preview"]) assert.ok(tools.has(name), name);
     assert.equal((tools.get("music_audit_start")?.inputSchema as any)?.properties && Object.keys((tools.get("music_audit_start")?.inputSchema as any).properties).length, 0);
     assert.equal((tools.get("music_audit_issues")?.inputSchema as any).properties.limit.maximum, 100);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.offset.default, 0);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.limit.default, 50);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.limit.maximum, 200);
+    assert.deepEqual(Object.keys((tools.get("music_album_artwork_preview")?.inputSchema as any).properties), ["albumId", "source", "index"]);
+    assert.equal((tools.get("music_album_artwork_preview")?.inputSchema as any).properties.index.default, 0);
+    await Promise.all([client.close(), server.close()]);
+  });
+});
+
+describe("bounded music artwork previews", () => {
+  it("fails closed when disabled and advertises preview readiness", async () => {
+    const files = await fixture();
+    const disabled = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+    const capability = await disabled.capabilities() as any;
+    assert.equal(capability.artworkPreview.enabled, false);
+    assert.equal(capability.canPreview, false);
+    await assert.rejects(disabled.artworkPreview({ albumId: "alb_0123456789abcdef01234567", source: "sidecar" }), /preview is disabled/);
+  });
+
+  it("selects indexed sidecar and distinct embedded variants from the snapshot", async () => {
+    const files = await artworkFixture();
+    files.config.maxImageBytes = Math.max(files.first.byteLength, files.second.byteLength);
+    assert.ok((await stat(path.join(files.directory, "01.mp3"))).size > files.config.maxImageBytes, "audio fixture exceeds the artwork byte limit");
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+    const sidecar = await service.artworkPreview({ albumId: files.completed.albums[0]!.id, source: "sidecar", index: 1 });
+    assert.deepEqual(sidecar.metadata.original, { sha256: sha256(files.second), width: 200, height: 300 });
+    assert.ok(sidecar.metadata.preview.width <= 512 && sidecar.metadata.preview.height <= 512);
+    assert.ok(sidecar.data.byteLength <= 1024 * 1024);
+    assert.equal((await sharp(sidecar.data).metadata()).format, "jpeg");
+
+    const embedded = await service.artworkPreview({ albumId: files.completed.albums[0]!.id, source: "embedded", index: 1 });
+    assert.deepEqual(embedded.metadata.original, { sha256: sha256(files.second), width: 200, height: 300 });
+    assert.equal(embedded.metadata.scanId, "artwork-scan");
+    assert.equal(embedded.metadata.albumArtist, "Artist");
+    assert.equal(embedded.metadata.albumTitle, "Album");
+    await assert.rejects(service.artworkPreview({ albumId: files.completed.albums[0]!.id, source: "sidecar", index: 2 }), /out of range/);
+  });
+
+  it("rejects symlinks, escapes, changed hashes, and oversized sidecars", async () => {
+    const symlinkFiles = await artworkFixture();
+    const outside = path.join(symlinkFiles.temp, "outside.png");
+    await writeFile(outside, symlinkFiles.first);
+    await symlink(outside, path.join(symlinkFiles.directory, "linked.png"));
+    symlinkFiles.completed.albums[0]!.sidecars = [{ source: "sidecar", filename: "Artist/Album/linked.png", readable: true, sha256: sha256(symlinkFiles.first), width: 800, height: 600 }];
+    await writeFile(path.join(symlinkFiles.cacheDir, "snapshot.json"), JSON.stringify(symlinkFiles.completed));
+    const symlinkService = new MusicAuditService(symlinkFiles.config, { mountInfoPath: symlinkFiles.mountInfoPath });
+    await assert.rejects(symlinkService.artworkPreview({ albumId: symlinkFiles.completed.albums[0]!.id, source: "sidecar" }), /symlink/);
+
+    const escapeFiles = await artworkFixture();
+    escapeFiles.completed.albums[0]!.sidecars = [{ source: "sidecar", filename: "../../outside.png", readable: true, sha256: sha256(escapeFiles.first), width: 800, height: 600 }];
+    await writeFile(path.join(escapeFiles.cacheDir, "snapshot.json"), JSON.stringify(escapeFiles.completed));
+    await assert.rejects(new MusicAuditService(escapeFiles.config, { mountInfoPath: escapeFiles.mountInfoPath }).artworkPreview({ albumId: escapeFiles.completed.albums[0]!.id, source: "sidecar" }), /escapes/);
+
+    const changedFiles = await artworkFixture();
+    await writeFile(path.join(changedFiles.directory, "cover.png"), changedFiles.second);
+    await assert.rejects(new MusicAuditService(changedFiles.config, { mountInfoPath: changedFiles.mountInfoPath }).artworkPreview({ albumId: changedFiles.completed.albums[0]!.id, source: "sidecar" }), /changed since/);
+
+    const embeddedChangedFiles = await artworkFixture();
+    await writeFile(path.join(embeddedChangedFiles.directory, "01.mp3"), id3WithPictures([embeddedChangedFiles.second, embeddedChangedFiles.first]));
+    await assert.rejects(new MusicAuditService(embeddedChangedFiles.config, { mountInfoPath: embeddedChangedFiles.mountInfoPath }).artworkPreview({ albumId: embeddedChangedFiles.completed.albums[0]!.id, source: "embedded", index: 0 }), /changed since/);
+
+    const oversizedFiles = await artworkFixture();
+    oversizedFiles.config.maxImageBytes = 1024;
+    await writeFile(path.join(oversizedFiles.directory, "cover.png"), Buffer.alloc(1025));
+    await assert.rejects(new MusicAuditService(oversizedFiles.config, { mountInfoPath: oversizedFiles.mountInfoPath }).artworkPreview({ albumId: oversizedFiles.completed.albums[0]!.id, source: "sidecar" }), /exceeds 1024/);
+  });
+
+  it("limits process-wide concurrent preview generation to two", async () => {
+    const files = await artworkFixture();
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    let entered = 0;
+    let bothEntered!: () => void;
+    const ready = new Promise<void>((resolve) => { bothEntered = resolve; });
+    const service = new MusicAuditService(files.config, {
+      mountInfoPath: files.mountInfoPath,
+      previewer: async () => {
+        entered += 1;
+        if (entered === 2) bothEntered();
+        await gate;
+        return { data: Buffer.from("jpeg"), originalWidth: 1, originalHeight: 1, width: 1, height: 1 };
+      },
+    });
+    const first = service.artworkPreview({ albumId: files.completed.albums[0]!.id, source: "sidecar", index: 0 });
+    const second = service.artworkPreview({ albumId: files.completed.albums[0]!.id, source: "sidecar", index: 1 });
+    await ready;
+    await assert.rejects(service.artworkPreview({ albumId: files.completed.albums[0]!.id, source: "sidecar", index: 0 }), /concurrency limit/);
+    release();
+    await Promise.all([first, second]);
+  });
+
+  it("returns MCP image content without putting base64 in metadata JSON and rejects invalid IDs", async () => {
+    const files = await artworkFixture();
+    const server = createMediaMcpServer(new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath }));
+    const client = new Client({ name: "artwork-preview-test", version: "1.0.0" });
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
+    const result = await client.callTool({ name: "music_album_artwork_preview", arguments: { albumId: files.completed.albums[0]!.id, source: "sidecar", index: 0 } }) as any;
+    assert.equal(result.content.length, 2);
+    assert.equal(result.content[0].type, "text");
+    assert.equal(result.content[1].type, "image");
+    assert.equal(result.content[1].mimeType, "image/jpeg");
+    const envelope = JSON.parse(result.content[0].text);
+    assert.equal(envelope.albumId, files.completed.albums[0]!.id);
+    assert.equal(result.content[0].text.includes(result.content[1].data), false);
+    assert.ok(envelope.preview.width <= 512 && envelope.preview.height <= 512);
+    assert.ok(Buffer.from(result.content[1].data, "base64").byteLength <= 1024 * 1024);
+    const invalid = await client.callTool({ name: "music_album_artwork_preview", arguments: { albumId: "../../etc/passwd", source: "sidecar" } }) as any;
+    assert.equal(invalid.isError, true);
     await Promise.all([client.close(), server.close()]);
   });
 });
