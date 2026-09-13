@@ -58,7 +58,17 @@ empty label. Successful tools with renderable data should use `success`.
 - `music_genre_distribution` returns bounded `items[]` from the latest completed
   audit snapshot. Each item preserves one exact raw genre string alongside its
   conservative normalized key, counts, and up to five representative albums;
-  clients must not assume comma- or semicolon-delimited tags were split.
+  clients must not assume comma- or semicolon-delimited tags were split. Empty
+  and whitespace-only values are omitted and count as missing genres.
+- `music_album_artwork_preview` accepts only `albumId`, `source` (`embedded` or
+  `sidecar`), and a nonnegative `index`. Success returns exactly two MCP content
+  parts: a concise JSON text envelope followed by an `image/jpeg` image part.
+  The JSON contains the scan ID, human-readable album artist/title, hashes,
+  original/preview dimensions, preview byte count, summary, warnings, errors,
+  and `checkedAt`; it never contains base64. Clients
+  must not expect original image bytes or caller-selected paths, URLs, sizes, or
+  filenames. The tool is disabled unless both music audit and the separate
+  artwork-preview gate are enabled on a trusted/private endpoint.
 - Subwave tools return live station state, now-playing, streams, queue/history,
   and admin-read search/recent data when admin credentials are configured.
 - Missing media tools return `services[]` with per-service `total` and sample

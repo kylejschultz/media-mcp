@@ -16,6 +16,7 @@ describe("music audit configuration and safety", () => {
   it("uses documented defaults and validates bounded knobs", () => {
     assert.deepEqual(musicAuditConfig({}), {
       enabled: false,
+      artworkPreviewEnabled: false,
       root: "/music-library",
       cacheDir: "/config/music-audit",
       lowResolutionThreshold: 600,
@@ -94,6 +95,17 @@ describe("music audit grouping and objective findings", () => {
     assert.equal(result.issues.find((item) => item.type === "art_embedded_sidecar_mismatch_candidate")?.severity, "candidate");
     assert.equal(result.issues.find((item) => item.type === "art_unreadable")?.severity, "issue");
   });
+
+  it("treats blank genre strings as missing without changing nonblank raw values", () => {
+    const result = aggregateMusicAudit([
+      track({ genres: ["", " \t ", "Jazz; Blues"] }),
+      track({ path: "Artist/Album/02.flac", genres: ["  "] }),
+    ], new Map(), 600);
+    assert.deepEqual(result.albums[0]!.genres, ["Jazz; Blues"]);
+    assert.deepEqual(result.albums[0]!.tracks[0]!.genres, ["Jazz; Blues"]);
+    assert.deepEqual(result.albums[0]!.tracks[1]!.genres, []);
+    assert.equal(result.issues.find((item) => item.type === "genre_missing")?.summary, "1 track(s) have no genre");
+  });
 });
 
 describe("music audit filesystem traversal", () => {
@@ -107,7 +119,7 @@ describe("music audit filesystem traversal", () => {
     await symlink(path.join(outside, "outside.mp3"), path.join(root, "linked.mp3"));
     await symlink(outside, path.join(root, "linked-directory"));
     const phases: string[] = [];
-    const snapshot = await scanMusicLibrary({ enabled: true, root, cacheDir: path.join(temp, "cache"), lowResolutionThreshold: 600, concurrency: 2, cooldownSeconds: 300, maxFiles: 100_000, maxImageBytes: 32 * 1024 * 1024 }, "scan", new Date().toISOString(), (progress) => phases.push(progress.phase));
+    const snapshot = await scanMusicLibrary({ enabled: true, artworkPreviewEnabled: false, root, cacheDir: path.join(temp, "cache"), lowResolutionThreshold: 600, concurrency: 2, cooldownSeconds: 300, maxFiles: 100_000, maxImageBytes: 32 * 1024 * 1024 }, "scan", new Date().toISOString(), (progress) => phases.push(progress.phase));
     assert.deepEqual(phases, ["discovering", "sidecars", "tracks", "aggregating", "completed"]);
     assert.deepEqual(snapshot.progress, { phase: "completed", discoveredAudio: 0, discoveredImages: 0, processedAudio: 0, processedImages: 0, failedMetadata: 0, failedImages: 0 });
     assert.equal(snapshot.summary.tracks, 0);
@@ -120,7 +132,7 @@ describe("music audit filesystem traversal", () => {
     const temp = await mkdtemp(path.join(os.tmpdir(), "music-audit-limits-"));
     await writeFile(path.join(temp, "one.mp3"), "not audio");
     await writeFile(path.join(temp, "two.mp3"), "not audio");
-    const config = { enabled: true, root: temp, cacheDir: path.join(temp, "cache"), lowResolutionThreshold: 600, concurrency: 2, cooldownSeconds: 300, maxFiles: 1, maxImageBytes: 1024 };
+    const config = { enabled: true, artworkPreviewEnabled: false, root: temp, cacheDir: path.join(temp, "cache"), lowResolutionThreshold: 600, concurrency: 2, cooldownSeconds: 300, maxFiles: 1, maxImageBytes: 1024 };
     await assert.rejects(scanMusicLibrary(config, "limited", new Date().toISOString()), /file limit exceeded/);
 
     await writeFile(path.join(temp, "two.mp3"), "ignored");
@@ -129,5 +141,19 @@ describe("music audit filesystem traversal", () => {
     assert.equal(snapshot.progress.failedImages, 1);
     assert.ok(snapshot.warnings.some((warning) => warning.includes("exceeds 1024 byte limit")));
     assert.doesNotMatch(snapshot.warnings.join("\n"), new RegExp(temp.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  });
+
+  it("turns a whitespace-only scanned genre into genre_missing", async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), "music-audit-blank-genre-"));
+    const frameBody = Buffer.from([0, ...Buffer.from("   ")]);
+    const frameHeader = Buffer.alloc(10);
+    frameHeader.write("TCON", 0, "ascii");
+    frameHeader.writeUInt32BE(frameBody.length, 4);
+    const tagBody = Buffer.concat([frameHeader, frameBody]);
+    const tagSize = Buffer.from([(tagBody.length >>> 21) & 0x7f, (tagBody.length >>> 14) & 0x7f, (tagBody.length >>> 7) & 0x7f, tagBody.length & 0x7f]);
+    await writeFile(path.join(temp, "blank.mp3"), Buffer.concat([Buffer.from("ID3\x03\x00\x00", "binary"), tagSize, tagBody]));
+    const result = await scanMusicLibrary({ enabled: true, artworkPreviewEnabled: false, root: temp, cacheDir: path.join(temp, "cache"), lowResolutionThreshold: 600, concurrency: 1, cooldownSeconds: 0, maxFiles: 10, maxImageBytes: 1024 * 1024 }, "blank", new Date().toISOString());
+    assert.deepEqual(result.albums[0]!.tracks[0]!.genres, []);
+    assert.equal(result.summary.byType.genre_missing, 1);
   });
 });

@@ -66,6 +66,8 @@ services:
       - MEDIA_MCP_HTTP_PORT=3000
       # Optional: enable only when this MCP endpoint is trusted/private.
       # - MUSIC_AUDIT_ENABLED=true
+      # Artwork preview remains disabled by default; enable only on a trusted/private endpoint.
+      # - MUSIC_AUDIT_ARTWORK_PREVIEW_ENABLED=false
       # - MUSIC_AUDIT_ROOT=/music-library
       # - MUSIC_AUDIT_CACHE_DIR=/config/music-audit
       # - MUSIC_AUDIT_LOW_RESOLUTION_PX=600
@@ -93,6 +95,11 @@ networks:
 The HTTP transport currently has no built-in authentication. Enable the music
 library audit only when the MCP endpoint is restricted to a trusted/private
 network or authenticated upstream; otherwise leave `MUSIC_AUDIT_ENABLED` unset.
+`MUSIC_AUDIT_ARTWORK_PREVIEW_ENABLED` is a separate opt-in gate and defaults to
+`false`. Enable it only when that MCP endpoint is trusted/private. Preview calls
+still accept no paths or URLs: they resolve an opaque album ID and indexed
+snapshot artwork under the fixed read-only root, reject symlinks/escapes or
+changed bytes, and return only a downscaled JPEG (never original artwork).
 
 If the GHCR package is private, log in on Unraid first:
 
@@ -272,6 +279,7 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `music_audit_issues` - page and filter objective findings and clearly labeled review candidates.
 - `music_genre_distribution` - page and search exact raw genre tags with conservative normalized keys, track/album counts, and up to five representative albums; compound tags are preserved rather than split.
 - `music_album_audit_detail` - return metadata, artwork hashes/dimensions, and findings for an opaque album ID from the current snapshot.
+- `music_album_artwork_preview` - return a bounded JPEG preview for one indexed embedded or sidecar snapshot variant when the separate preview gate is enabled; callers provide only an opaque album ID, source, and nonnegative index.
 - `subwave_status` - show read-only Subwave station health, now-playing, queue, and admin-read availability.
 - `subwave_now_playing` - show current Subwave track, station context, DJ persona, listeners, and stream descriptor.
 - `subwave_state` - show Subwave current queue, recent history, DJ log, and station state.
