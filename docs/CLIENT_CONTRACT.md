@@ -55,6 +55,10 @@ empty label. Successful tools with renderable data should use `success`.
   failed downstream queue lookups.
 - Navidrome tools use the Subsonic API and return normalized search, scan, and
   library visibility data without exposing credentials.
+- `music_genre_distribution` returns bounded `items[]` from the latest completed
+  audit snapshot. Each item preserves one exact raw genre string alongside its
+  conservative normalized key, counts, and up to five representative albums;
+  clients must not assume comma- or semicolon-delimited tags were split.
 - Subwave tools return live station state, now-playing, streams, queue/history,
   and admin-read search/recent data when admin credentials are configured.
 - Missing media tools return `services[]` with per-service `total` and sample

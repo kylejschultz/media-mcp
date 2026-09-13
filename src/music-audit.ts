@@ -598,6 +598,75 @@ export class MusicAuditService {
     return response(`Found ${filtered.length} matching music audit findings`, { scanId: this.snapshot.scanId, items: filtered.slice(offset, offset + limit), total: filtered.length, offset, limit, empty: filtered.length === 0 }, this.snapshot.warnings, this.snapshot.errors);
   }
 
+  async genreDistribution(args: { search?: string; offset?: number; limit?: number }) {
+    await this.initialize();
+    const offset = Math.max(0, Math.trunc(args.offset ?? 0));
+    const limit = Math.min(200, Math.max(1, Math.trunc(args.limit ?? 50)));
+    if (!this.snapshot) return response("No completed music audit snapshot is available", {
+      scanId: null,
+      items: [],
+      total: 0,
+      totalUniqueGenres: 0,
+      totalTaggedTracks: 0,
+      totalAlbumsRepresented: 0,
+      offset,
+      limit,
+      summaryData: { uniqueGenres: 0, taggedTracks: 0, albumsRepresented: 0 },
+      empty: true,
+    });
+
+    const genres = new Map<string, {
+      rawGenre: string;
+      normalizedKey: string;
+      trackCount: number;
+      albumIds: Set<string>;
+      representativeAlbums: Array<{ albumId: string; albumArtist?: string; album?: string; year?: number }>;
+    }>();
+    let totalTaggedTracks = 0;
+    const representedAlbumIds = new Set<string>();
+    for (const album of this.snapshot.albums) {
+      let albumTagged = false;
+      for (const track of album.tracks) {
+        const trackGenres = new Set(track.genres);
+        if (trackGenres.size > 0) {
+          totalTaggedTracks += 1;
+          albumTagged = true;
+        }
+        for (const rawGenre of trackGenres) {
+          const row = genres.get(rawGenre) ?? { rawGenre, normalizedKey: normalized(rawGenre) ?? "", trackCount: 0, albumIds: new Set<string>(), representativeAlbums: [] };
+          row.trackCount += 1;
+          if (!row.albumIds.has(album.id)) {
+            row.albumIds.add(album.id);
+            if (row.representativeAlbums.length < 5) row.representativeAlbums.push({ albumId: album.id, albumArtist: album.albumArtist, album: album.album, year: album.year });
+          }
+          genres.set(rawGenre, row);
+        }
+      }
+      if (albumTagged) representedAlbumIds.add(album.id);
+    }
+
+    const rawSearch = args.search?.toLocaleLowerCase();
+    const normalizedSearch = normalized(args.search);
+    const rows = [...genres.values()]
+      .filter((row) => !args.search || row.rawGenre.toLocaleLowerCase().includes(rawSearch!) || row.normalizedKey.includes(normalizedSearch ?? ""))
+      .map(({ albumIds, ...row }) => ({ ...row, albumCount: albumIds.size }))
+      .sort((a, b) => b.trackCount - a.trackCount || a.rawGenre.localeCompare(b.rawGenre));
+    const totalUniqueGenres = genres.size;
+    const totalAlbumsRepresented = representedAlbumIds.size;
+    return response(`Found ${rows.length} matching genre rows from ${totalUniqueGenres} unique raw genres`, {
+      scanId: this.snapshot.scanId,
+      items: rows.slice(offset, offset + limit),
+      total: rows.length,
+      totalUniqueGenres,
+      totalTaggedTracks,
+      totalAlbumsRepresented,
+      offset,
+      limit,
+      summaryData: { uniqueGenres: totalUniqueGenres, taggedTracks: totalTaggedTracks, albumsRepresented: totalAlbumsRepresented, scanId: this.snapshot.scanId },
+      empty: rows.length === 0,
+    }, this.snapshot.warnings, this.snapshot.errors);
+  }
+
   async albumDetail(albumId: string) {
     await this.initialize();
     if (!this.snapshot) throw new Error("No completed music audit snapshot is available");

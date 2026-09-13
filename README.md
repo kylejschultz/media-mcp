@@ -270,6 +270,7 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `music_audit_status` - show current scan phase, discovered/processed/failure counts, and the latest completed snapshot reference.
 - `music_audit_summary` - return compact counts from the latest completed snapshot.
 - `music_audit_issues` - page and filter objective findings and clearly labeled review candidates.
+- `music_genre_distribution` - page and search exact raw genre tags with conservative normalized keys, track/album counts, and up to five representative albums; compound tags are preserved rather than split.
 - `music_album_audit_detail` - return metadata, artwork hashes/dimensions, and findings for an opaque album ID from the current snapshot.
 - `subwave_status` - show read-only Subwave station health, now-playing, queue, and admin-read availability.
 - `subwave_now_playing` - show current Subwave track, station context, DJ persona, listeners, and stream descriptor.
