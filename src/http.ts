@@ -134,6 +134,24 @@ export async function beetsGet<T>(app: AppConfig, path: string, params: Record<s
   return readJson<T>(response, app.label);
 }
 
+export async function beetsRemediationPost<T>(app: AppConfig, path: string, token: string, body: unknown) {
+  if (!app.url) throw new Error(`${app.label} is not configured`);
+
+  const url = new URL(`/api_v1/remediation/${trimSlashes(path)}`, app.url);
+  const response = await fetch(url, {
+    method: "POST",
+    redirect: "error",
+    signal: AbortSignal.timeout(5 * 60_000),
+    headers: {
+      Accept: "application/json",
+      Authorization: `Bearer ${token}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(body),
+  });
+  return readJson<T>(response, `${app.label} remediation`);
+}
+
 export async function slskdGet<T>(app: AppConfig, path: string, params: Record<string, string | number | boolean | undefined> = {}) {
   if (!app.url || !app.apiKey) throw new Error(`${app.label} is not configured`);
 

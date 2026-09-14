@@ -1,0 +1,47 @@
+services:
+  beets-flask:
+    image: ghcr.io/kylejschultz/beets-flask-remediation@sha256:${BEETS_FLASK_REMEDIATION_IMAGE_DIGEST:?pin the reviewed 64-hex pilot digest}
+    environment:
+      TZ: America/Los_Angeles
+      USER_ID: 1000
+      GROUP_ID: 1000
+      BEETS_REMEDIATION_ENABLED: "true"
+      # Enable both only while beets import queues/workers and all other writers are confirmed idle.
+      BEETS_REMEDIATION_WRITES_ENABLED: ${BEETS_REMEDIATION_WRITES_ENABLED:-false}
+      BEETS_REMEDIATION_MAINTENANCE: ${BEETS_REMEDIATION_MAINTENANCE:-false}
+      BEETS_REMEDIATION_TOKEN: ${BEETS_FLASK_REMEDIATION_TOKEN:?set in the Compose environment}
+      BEETS_REMEDIATION_MANIFEST_HMAC_KEY: ${BEETS_REMEDIATION_MANIFEST_HMAC_KEY:?set in the Compose environment}
+      BEETS_REMEDIATION_APPROVED_SCAN_ID: ${BEETS_REMEDIATION_APPROVED_SCAN_ID:?set after review}
+      BEETS_REMEDIATION_GENRES_JSON: ${BEETS_REMEDIATION_GENRES_JSON:?set the approved JSON array}
+      BEETS_REMEDIATION_LIBRARY_ROOT: /music/imported
+      BEETS_REMEDIATION_BACKUP_ROOT: /remediation-backup
+    volumes:
+      - /path/to/beets-flask/config:/config
+      - /path/to/music/inbox:/music/inbox
+      - /path/to/music/library:/music/imported:rw
+      # Must be outside /music/imported and on the same filesystem for recoverable per-file replacement.
+      - /path/to/music/remediation-backup:/remediation-backup:rw
+    networks: [media]
+
+  media-mcp:
+    image: ghcr.io/kylejschultz/media-mcp@sha256:${MEDIA_MCP_IMAGE_DIGEST:?pin the reviewed 64-hex pilot digest}
+    environment:
+      BEETS_FLASK_URL: http://beets-flask:5001
+      BEETS_FLASK_REMEDIATION_TOKEN: ${BEETS_FLASK_REMEDIATION_TOKEN:?same token as beets-flask}
+      BEETS_REMEDIATION_MANIFEST_HMAC_KEY: ${BEETS_REMEDIATION_MANIFEST_HMAC_KEY:?same key as beets-flask}
+      BEETS_REMEDIATION_GENRES_JSON: ${BEETS_REMEDIATION_GENRES_JSON:?same allowlist as beets-flask}
+      MUSIC_REMEDIATION_CACHE_DIR: /config/music-remediation
+      ALLOW_REQUESTS: "true"
+      ALLOW_WRITE_BEETS_FLASK: "true"
+      MUSIC_AUDIT_ENABLED: "true"
+      MUSIC_AUDIT_ROOT: /music-library
+    volumes:
+      - /path/to/media-mcp/config:/config
+      # The audit boundary remains read-only. It never performs remediation writes.
+      - /path/to/music/library:/music-library:ro
+    networks: [media]
+
+networks:
+  media:
+    external: true
+    name: docker-network
