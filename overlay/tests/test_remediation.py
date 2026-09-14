@@ -293,6 +293,11 @@ class RemediationTest(unittest.TestCase):
 
     def test_happy_path_preserves_audio_and_rolls_back_byte_identically(self) -> None:
         before = self.original_bytes()
+        original_db_mtimes = {}
+        for item in self.db.items(MatchQuery("mb_albumid", RELEASE_ID)):
+            item.mtime -= 5
+            item.store()
+            original_db_mtimes[item.id] = item.mtime
         essence = {track["path"]: self.service._audio_essence(self.library / track["path"]) for track in self.manifest["albums"][0]["tracks"]}
         result = self.service.apply(self.manifest)
         self.assertRegex(result["transaction_id"], r"^[a-f0-9]{32}$")
@@ -314,7 +319,7 @@ class RemediationTest(unittest.TestCase):
         self.assertEqual(self.original_bytes(), before)
         rolled_back_items = list(self.db.items(MatchQuery("mb_albumid", RELEASE_ID)))
         self.assertTrue(all(item.genre == "Rock" for item in rolled_back_items))
-        self.assertTrue(all(item.mtime == item.current_mtime() for item in rolled_back_items))
+        self.assertTrue(all(item.mtime == original_db_mtimes[item.id] for item in rolled_back_items))
         self.assertTrue(all(item.try_filesize() == Path(item.filepath).stat().st_size for item in rolled_back_items))
         self.finalize_tx(self.service, result["transaction_id"], self.journal(result["transaction_id"])["original_state"])
         self.assertFalse((self.backup / "transactions" / result["transaction_id"]).exists())

@@ -6,6 +6,7 @@ import hashlib
 import hmac
 import ipaddress
 import json
+import logging
 import os
 import re
 import shutil
@@ -33,6 +34,8 @@ from PIL import UnidentifiedImageError
 from quart import Blueprint, Response, jsonify, request
 
 from beets_flask.config import get_config
+
+logger = logging.getLogger(__name__)
 
 MAX_REQUEST_BYTES = 1024 * 1024
 MAX_ALBUMS = 10
@@ -1085,8 +1088,10 @@ class RemediationService:
                 raise RemediationError("Beets database album conflicts with the known transaction states")
             for relative in sorted(items):
                 item = items[relative]
-                item.read()
-                item.genre = expected["items"][relative]["genre"]
+                row = expected["items"][relative]
+                item.genre = row["genre"]
+                item.mtime = row["mtime"]
+                item.filesize = row["size"]
                 item.store()
                 self._during_db_restore(relative)
             refreshed = library.get_album(db_album.id)
@@ -1105,8 +1110,10 @@ class RemediationService:
         for relative in sorted(items):
             item = items[relative]
             item.read()
-            item.store()
             live = self._library_path(relative)
+            item.mtime = item.current_mtime()
+            item.filesize = live.stat().st_size
+            item.store()
             if item.mtime != item.current_mtime() or item.try_filesize() != live.stat().st_size:
                 raise RemediationError("beets database item mtime or computed size is stale")
         refreshed = library.get_album(db_album.id)
@@ -1128,12 +1135,12 @@ class RemediationService:
                 live = self._library_path(relative)
                 if item.genre != (genres[0] if genres else ""):
                     raise RemediationError("beets database genre does not match audited file state")
-                if item.mtime != item.current_mtime() or item.try_filesize() != live.stat().st_size:
-                    raise RemediationError("beets database item mtime or computed size is stale")
                 if expected_db:
                     row = expected_db["items"][relative]
                     if item.genre != row["genre"] or item.mtime != row["mtime"] or item.try_filesize() != row["size"]:
                         raise RemediationError("beets database item genre, mtime, or size does not match transaction state")
+                elif item.mtime != item.current_mtime() or item.try_filesize() != live.stat().st_size:
+                    raise RemediationError("beets database item mtime or computed size is stale")
             expected_art = bytestring_path(str(self._library_path(album["sidecar"]["path"])))
             if expected_db:
                 if db_album.genre != expected_db["album"]["genre"]:
@@ -1614,6 +1621,7 @@ def create_remediation_blueprint(settings: Settings | None = None, service: Reme
         except RemediationError as error:
             return jsonify({"ok": False, "error": str(error)}), 409
         except Exception:
+            logger.exception("Remediation operation failed closed")
             return jsonify({"ok": False, "error": "Remediation operation failed closed"}), 500
 
     @blueprint.post("/art-digest")
