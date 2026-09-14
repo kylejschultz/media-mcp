@@ -130,6 +130,68 @@ Request drafts describe how a client can build a movie or series request.
 `formFields` are generic descriptors. Clients decide whether they become
 Discord selects, web controls, CLI prompts, or something else.
 
+## Music remediation manifests and transactions
+
+Clients never submit library paths or complete manifests. First call
+`music_remediation_art_digest` for reviewed CAA art; it returns decoded
+SHA-256/dimensions but no image bytes. Then call `music_remediation_prepare`
+with 1-10 latest-snapshot opaque album IDs, one/two approved genres, and either
+the exact CAA URL plus reviewed SHA-256 or the snapshot's reviewed sidecar hash.
+
+Media-mcp derives `music-remediation-manifest.v1` from the current snapshot,
+positively verified read-only root, exact current whole-file hashes, embedded
+hashes, MBID, and exactly one JPEG/PNG sidecar. It stores a canonical signed
+envelope under `/config/music-remediation` and returns only its opaque
+`manifestId`, digest, snapshot ID, and counts. Preview/apply accept that ID,
+reload the file, verify its HMAC/digest with constant-time comparisons, require
+the same latest snapshot, rehash current files, and send the signed envelope to
+the overlay.
+
+CAA manifests require `expected_sha256`; preview and apply download through the
+same bounded CAA/Internet Archive policy and reject changed bytes. Apply also
+requires a caller-generated 32-hex `operationId`, which becomes the transaction
+ID for idempotent retry and timeout recovery. Replacement is journaled and
+recoverable per file; it is not album- or batch-atomic. Before each live
+replacement, its original is written to a same-directory temporary, fsynced,
+SHA-256 verified, atomically committed, parent-fsynced, and recorded as
+committed in the durable journal.
+
+Rollback accepts only an `applied` transaction whose live files and beets DB
+still exactly match its post-state. It refuses repeated rollback and later
+edits. Before restoring any file it durably records `rolling_back`; the
+explicit recovery path then idempotently resumes a mix of exact post/original
+files and database rows using only committed, hash-reverified backups.
+`music_remediation_status` returns one bounded transaction summary by operation
+ID without paths; `music_remediation_recover` distinctly handles interrupted
+`applying` restoration and `rolling_back` resumption. Failed applies that
+restore cleanly become `failed_restored` and can be finalized.
+
+Finalize accepts only `transactionId` from the MCP caller. Media-mcp obtains
+the exact expected state from a bounded authenticated internal overlay route,
+loads the latest completed audit snapshot, requires a different scan ID,
+rehashes full files through the verified read-only audit root, and derives all
+album IDs, track sets, ordered genres, embedded hashes, and sidecar path/hash.
+It signs that canonical attestation with the shared manifest HMAC key. The
+overlay checks the HMAC in constant time and requires exact journal-state
+equality before deletion, so a bearer-authenticated direct caller cannot supply
+a fabricated scan or state. It persists `finalizing` before backup deletion and
+reconciles interrupted finalize at mutation-enabled startup or on finalize
+retry while re-verifying file/metadata/database state; status does not perform
+that mutation.
+
+Mutations require both MCP write gates and the overlay's independent,
+false-by-default `BEETS_REMEDIATION_WRITES_ENABLED` and
+`BEETS_REMEDIATION_MAINTENANCE` assertions; bearer authentication is not a
+write gate. The overlay fails closed unless its installed beets-flask RQ queues
+have no queued, scheduled, or started jobs, and repeats that check before live
+replacement and DB synchronization. Operators must separately stop unrelated
+writers/watchdogs because they do not honor the overlay lock. v1 requires
+exactly one existing supported sidecar and
+fails closed otherwise. Directory-FD/`O_NOFOLLOW` operations and immediate
+parent identity rechecks reduce races, but the trusted-library-owner assumption
+remains: no hostile actor may have concurrent rename/write access to validated
+parent directories during the final syscall window.
+
 ## Request Lifecycle
 
 Core movie flow:
