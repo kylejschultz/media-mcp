@@ -1075,12 +1075,32 @@ class RemediationService:
                 None,
             )
             actual = self._capture_db_state(items, db_album)
+            restored_paths = {
+                entry["path"]
+                for entry in journal.get("install_files", [])
+                if entry.get("state") == "restored"
+            }
+            reconciled_mtime = False
             for relative, row in actual["items"].items():
-                allowed = [expected["items"][relative]]
+                original = expected["items"][relative]
+                allowed = [original]
                 if post:
                     allowed.append(post["items"][relative])
-                if row not in allowed:
+                if row in allowed:
+                    continue
+                legacy_restored = (
+                    journal.get("status") == "failed_conflict"
+                    and relative in restored_paths
+                    and row["genre"] == original["genre"]
+                    and row["size"] == original["size"]
+                    and row["mtime"] == items[relative].current_mtime()
+                )
+                if not legacy_restored:
                     raise RemediationError("Beets database item conflicts with the known transaction states")
+                original["mtime"] = row["mtime"]
+                reconciled_mtime = True
+            if reconciled_mtime:
+                self._write_journal(journal)
             allowed_album = [expected["album"]]
             if post:
                 allowed_album.append(post["album"])
