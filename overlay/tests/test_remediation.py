@@ -458,6 +458,8 @@ class RemediationTest(unittest.TestCase):
         journal = json.loads(next((self.backup / "journals").glob("*.json")).read_text())
         journal["status"] = "failed_conflict"
         journal.pop("inflight_post_state", None)
+        untouched = self.manifest["albums"][0]["tracks"][-1]["path"]
+        journal["install_files"] = [entry for entry in journal["install_files"] if entry["path"] != untouched]
         service._write_journal(journal)
         rescanned_mtimes = {}
         for item in self.db.items(MatchQuery("mb_albumid", RELEASE_ID)):

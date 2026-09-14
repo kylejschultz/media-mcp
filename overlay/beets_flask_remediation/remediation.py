@@ -1075,6 +1075,7 @@ class RemediationService:
                 None,
             )
             actual = self._capture_db_state(items, db_album)
+            registered_paths = {entry["path"] for entry in journal.get("install_files", [])}
             restored_paths = {
                 entry["path"]
                 for entry in journal.get("install_files", [])
@@ -1090,7 +1091,7 @@ class RemediationService:
                     continue
                 legacy_restored = (
                     journal.get("status") == "failed_conflict"
-                    and relative in restored_paths
+                    and (relative in restored_paths or relative not in registered_paths)
                     and row["genre"] == original["genre"]
                     and row["size"] == original["size"]
                     and row["mtime"] == items[relative].current_mtime()
