@@ -13,7 +13,7 @@ from unittest.mock import Mock, patch
 
 from beets.dbcore.query import MatchQuery
 from beets.library import Item, Library
-from beets.util import bytestring_path
+from beets.util import bytestring_path, syspath
 from mediafile import Image as MediaImage
 from mediafile import ImageType, MediaFile
 from PIL import Image as PillowImage
@@ -446,6 +446,34 @@ class RemediationTest(unittest.TestCase):
             service.apply(self.manifest)
         self.assertEqual(self.original_bytes(), before)
         self.assertTrue(all(item.genre == "Rock" for item in self.db.items()))
+
+    def test_recovers_legacy_failed_conflict_without_overwriting_rescanned_mtimes(self) -> None:
+        before = self.original_bytes()
+        for item in self.db.items(MatchQuery("mb_albumid", RELEASE_ID)):
+            item.mtime -= 5
+            item.store()
+        service = FailDatabaseOnceService(self.settings, self.target_art, lambda: self.db)
+        with self.assertRaisesRegex(RemediationError, "database failure"):
+            service.apply(self.manifest)
+        journal = json.loads(next((self.backup / "journals").glob("*.json")).read_text())
+        journal["status"] = "failed_conflict"
+        journal.pop("inflight_post_state", None)
+        service._write_journal(journal)
+        rescanned_mtimes = {}
+        for item in self.db.items(MatchQuery("mb_albumid", RELEASE_ID)):
+            item.read()
+            item.genre = "Rock"
+            item.store()
+            rescanned_mtimes[item.id] = item.mtime
+        recovered = FakeCaaService(self.settings, self.target_art, lambda: self.db)
+        recovered.transaction(journal["transaction_id"], recover=True)
+        self.assertEqual(self.original_bytes(), before)
+        stored = self.journal(journal["transaction_id"])
+        self.assertEqual(stored["status"], "failed_restored")
+        items = list(self.db.items(MatchQuery("mb_albumid", RELEASE_ID)))
+        self.assertTrue(all(item.mtime == rescanned_mtimes[item.id] for item in items))
+        expected = stored["original_state"][0]["db"]["items"]
+        self.assertTrue(all(expected[str(Path(syspath(item.path)).relative_to(self.library))]["mtime"] == item.mtime for item in items))
 
     def test_two_ordered_genres_and_database_state_round_trip(self) -> None:
         before = self.original_bytes()
