@@ -68,8 +68,10 @@ empty label. Successful tools with renderable data should use `success`.
   `findings`, genre/artwork/finding change flags, and typed `errors`. Clients must
   treat any non-`verified` album or top-level `failed` status as a failed-closed
   result. The tool never accepts paths and never updates the baseline snapshot,
-  full-scan state, or cooldown. Unknown/duplicate IDs and unsafe shared selection
-  boundaries are tool errors; live identity mismatch/split/merge, missing/path
+  full-scan state, or cooldown. It recursively scans snapshot-resolved boundaries
+  and deduplicates overlapping selected roots. Unknown/duplicate IDs and any
+  selected/unselected boundary overlap are tool errors; live identity
+  mismatch/split/merge, missing/path
   drift, and unreadable selected data are explicit report errors. A safety or
   2,500-file scan-limit failure returns no partial album results.
 - `music_album_artwork_preview` accepts only `albumId`, `source` (`embedded` or

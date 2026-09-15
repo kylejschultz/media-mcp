@@ -449,6 +449,74 @@ describe("targeted music album verification", () => {
     assert.deepEqual(await readFile(path.join(files.cacheDir, "scan-state.json")), stateBytes);
   });
 
+  it("recurses through nested baseline directories and deduplicates overlapping roots", async () => {
+    const files = await fixture();
+    const directory = path.join(files.root, "Artist", "Album");
+    const discDirectory = path.join(directory, "Disc 2");
+    await mkdir(discDirectory, { recursive: true });
+    await writeFile(path.join(directory, "01.mp3"), id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock", title: "One" }));
+    await writeFile(path.join(discDirectory, "02.mp3"), id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock", title: "Two" }));
+    const cover = await sharp({ create: { width: 800, height: 800, channels: 3, background: "#654321" } }).png().toBuffer();
+    await writeFile(path.join(directory, "cover.png"), cover);
+    await writeFile(path.join(discDirectory, "cover.png"), cover);
+    const baseline = await scanMusicLibrary(files.config, "nested-baseline", "2026-09-15T00:00:00.000Z");
+    assert.deepEqual(baseline.albums[0]!.directories, ["Artist/Album", "Artist/Album/Disc 2"]);
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
+
+    const result = await new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath }).verifyAlbums([baseline.albums[0]!.id]) as any;
+    assert.equal(result.status, "completed");
+    assert.equal(result.progress.discoveredAudio, 2);
+    assert.equal(result.progress.discoveredImages, 2);
+    assert.equal(result.albums[0].live.tracks.length, 2);
+    assert.equal(result.albums[0].live.sidecars.length, 2);
+  });
+
+  it("reports unexpected nested tracks and fails closed on nested symlinks", async () => {
+    const files = await fixture();
+    const directory = path.join(files.root, "Artist", "Album");
+    const nested = path.join(directory, "Bonus");
+    await mkdir(directory, { recursive: true });
+    await writeFile(path.join(directory, "01.mp3"), id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock", title: "One" }));
+    const baseline = await scanMusicLibrary(files.config, "nested-drift-baseline", "2026-09-15T00:00:00.000Z");
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
+    const albumId = baseline.albums[0]!.id;
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+
+    await mkdir(nested);
+    const addedTrack = path.join(nested, "02.mp3");
+    await writeFile(addedTrack, id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock", title: "Two" }));
+    const drift = await service.verifyAlbums([albumId]) as any;
+    assert.equal(drift.status, "failed");
+    const pathDrift = drift.albums[0].errors.find((error: any) => error.code === "path_drift" && error.paths);
+    assert.deepEqual(pathDrift.paths, ["Artist/Album/Bonus/02.mp3"]);
+    assert.equal(drift.progress.discoveredAudio, 2);
+
+    await unlink(addedTrack);
+    const outside = path.join(files.temp, "outside.mp3");
+    await writeFile(outside, id3Track({ album: "Outside", albumArtist: "Outside", genre: "Metal" }));
+    await symlink(outside, path.join(nested, "linked.mp3"));
+    const unsafe = await service.verifyAlbums([albumId]) as any;
+    assert.equal(unsafe.status, "failed");
+    assert.equal(unsafe.failure.code, "symlink_or_path_escape");
+    assert.deepEqual(unsafe.albums, []);
+  });
+
+  it("rejects selected and unselected album boundaries that overlap by containment", async () => {
+    const files = await fixture();
+    const parent = path.join(files.root, "Artist");
+    const child = path.join(parent, "Other Album");
+    await mkdir(child, { recursive: true });
+    await writeFile(path.join(parent, "parent.mp3"), id3Track({ album: "Parent Album", albumArtist: "Artist", genre: "Rock" }));
+    await writeFile(path.join(child, "01.mp3"), id3Track({ album: "Other Album", albumArtist: "Artist", genre: "Jazz" }));
+    const baseline = await scanMusicLibrary(files.config, "overlap-baseline", "2026-09-15T00:00:00.000Z");
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
+    const parentAlbum = baseline.albums.find((album) => album.album === "Parent Album")!;
+    await assert.rejects(new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath }).verifyAlbums([parentAlbum.id]), /sharing that boundary/);
+  });
+
   it("fails closed for identity drift, missing data, and the targeted scan limit", async () => {
     const files = await fixture();
     const directory = path.join(files.root, "Artist", "Album");

@@ -101,9 +101,10 @@ still accept no paths or URLs: they resolve an opaque album ID and indexed
 snapshot artwork under the fixed read-only root, reject symlinks/escapes or
 changed bytes, and return only a downscaled JPEG (never original artwork).
 Targeted post-change verification likewise accepts only 1–25 unique opaque album
-IDs from the latest completed full audit. It rescans only their snapshot-resolved
-directories, never writes a replacement snapshot or scan-state file, and fails
-closed on unknown identities, shared selection boundaries, split/merged identity,
+IDs from the latest completed full audit. It recursively rescans only their
+snapshot-resolved directory boundaries, deduplicates overlapping selected roots,
+never writes a replacement snapshot or scan-state file, and fails closed on
+unknown identities, selected/unselected boundary overlap, split/merged identity,
 missing/path-drifted data, symlinks/escapes, unreadable data, or its 2,500-file
 hard limit.
 

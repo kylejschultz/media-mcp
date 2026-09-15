@@ -376,28 +376,43 @@ function withinRoot(root: string, absolute: string) {
   return absolute !== root && absolute.startsWith(`${root}${path.sep}`);
 }
 
+function pathContains(parent: string, child: string) {
+  const relative = path.posix.relative(parent, child);
+  return relative === "" || (relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative));
+}
+
 async function walkSelectedDirectories(root: string, directories: string[], maxFiles: number): Promise<DiscoveredMusicFiles> {
   const audio = new Set<string>();
   const images = new Set<string>();
-  for (const relativeDirectory of new Set(directories)) {
+  const pending = [...new Set(directories)].map((relativeDirectory) => {
     const directory = path.resolve(root, relativeDirectory);
     if (directory !== root && !withinRoot(root, directory)) throw new Error(`Selected directory escapes the configured music root: ${relativeDirectory}`);
+    return directory;
+  });
+  const visited = new Set<string>();
+
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    if (visited.has(directory)) continue;
     const linkStat = await lstat(directory);
-    if (linkStat.isSymbolicLink()) throw new Error(`Selected directory is a symlink: ${relativeDirectory}`);
+    if (linkStat.isSymbolicLink()) throw new Error(`Selected directory is a symlink: ${relativePath(root, directory)}`);
     const canonical = await realpath(directory);
-    if (canonical !== directory || (canonical !== root && !withinRoot(root, canonical))) throw new Error(`Selected directory contains a symlink or escapes the configured music root: ${relativeDirectory}`);
-    if (!linkStat.isDirectory()) throw new Error(`Selected directory is not a directory: ${relativeDirectory}`);
+    if (canonical !== directory || (canonical !== root && !withinRoot(root, canonical))) throw new Error(`Selected directory contains a symlink or escapes the configured music root: ${relativePath(root, directory)}`);
+    if (!linkStat.isDirectory()) throw new Error(`Selected directory is not a directory: ${relativePath(root, directory)}`);
+    visited.add(directory);
 
     for (const entry of await readdir(directory, { withFileTypes: true })) {
       const absolute = path.join(directory, entry.name);
       if (entry.isSymbolicLink()) throw new Error(`Selected data contains a symlink: ${relativePath(root, absolute)}`);
-      if (!entry.isFile()) continue;
-      const canonicalFile = await realpath(absolute);
-      if (canonicalFile !== absolute || !withinRoot(root, canonicalFile)) throw new Error(`Selected file contains a symlink or escapes the configured music root: ${relativePath(root, absolute)}`);
-      const extension = path.extname(entry.name).toLowerCase();
-      if (AUDIO_EXTENSIONS.has(extension)) audio.add(absolute);
-      else if (IMAGE_EXTENSIONS.has(extension)) images.add(absolute);
-      if (audio.size + images.size > maxFiles) throw new Error(`Targeted music audit file limit exceeded (${maxFiles})`);
+      if (entry.isDirectory()) pending.push(absolute);
+      else if (entry.isFile()) {
+        const canonicalFile = await realpath(absolute);
+        if (canonicalFile !== absolute || !withinRoot(root, canonicalFile)) throw new Error(`Selected file contains a symlink or escapes the configured music root: ${relativePath(root, absolute)}`);
+        const extension = path.extname(entry.name).toLowerCase();
+        if (AUDIO_EXTENSIONS.has(extension)) audio.add(absolute);
+        else if (IMAGE_EXTENSIONS.has(extension)) images.add(absolute);
+        if (audio.size + images.size > maxFiles) throw new Error(`Targeted music audit file limit exceeded (${maxFiles})`);
+      }
     }
   }
   return { audio: [...audio].sort(), images: [...images].sort() };
@@ -797,8 +812,8 @@ export class MusicAuditService {
     });
     const selectedIds = new Set(albumIds);
     const selectedDirectories = [...new Set(selected.flatMap((album) => album.directories))].sort();
-    const containsDirectory = (directory: string) => selectedDirectories.includes(directory);
-    const boundaryConflict = baseline.albums.find((album) => !selectedIds.has(album.id) && album.tracks.some((track) => containsDirectory(track.directory)));
+    const overlapsSelectedBoundary = (directory: string) => selectedDirectories.some((selectedDirectory) => pathContains(selectedDirectory, directory) || pathContains(directory, selectedDirectory));
+    const boundaryConflict = baseline.albums.find((album) => !selectedIds.has(album.id) && album.tracks.some((track) => overlapsSelectedBoundary(track.directory)));
     if (boundaryConflict) throw new Error(`Selected directories also contain unselected baseline album ${boundaryConflict.id}; select all albums sharing that boundary`);
 
     const capabilities = await this.capabilities();
@@ -842,7 +857,7 @@ export class MusicAuditService {
       const associated = [...new Set(baselineAlbum.tracks.map((track) => liveByTrack.get(track.path)?.id).filter((id): id is string => Boolean(id)))];
       const liveAlbum = liveSnapshot.albums.find((album) => album.id === baselineAlbum.id) ?? (associated.length === 1 ? liveSnapshot.albums.find((album) => album.id === associated[0]) : undefined);
       const missingPaths = [...baselinePaths].filter((trackPath) => !liveByTrack.has(trackPath)).sort();
-      const unexpectedPaths = [...liveByTrack.keys()].filter((trackPath) => !selectedBaselinePaths.has(trackPath) && baselineAlbum.directories.includes(path.posix.dirname(trackPath))).sort();
+      const unexpectedPaths = [...liveByTrack.keys()].filter((trackPath) => !selectedBaselinePaths.has(trackPath) && baselineAlbum.directories.some((directory) => pathContains(directory, path.posix.dirname(trackPath)))).sort();
       if (missingPaths.length > 0) errors.push({ code: "missing_data", message: `${missingPaths.length} baseline track(s) are missing`, paths: missingPaths });
       if (unexpectedPaths.length > 0) errors.push({ code: "path_drift", message: `${unexpectedPaths.length} unexpected live track(s) were found`, paths: unexpectedPaths });
       if (associated.length > 1) errors.push({ code: "identity_split", message: `Baseline tracks now resolve to ${associated.length} album identities` });
