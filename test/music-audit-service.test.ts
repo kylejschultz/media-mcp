@@ -1,13 +1,13 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { mkdtemp, mkdir, readFile, readdir, stat, symlink, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, readdir, stat, symlink, unlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { describe, it } from "node:test";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import sharp from "sharp";
-import { MusicAuditService, type MusicAuditConfig, type MusicAuditSnapshot } from "../src/music-audit.js";
+import { MusicAuditService, scanMusicLibrary, type MusicAuditConfig, type MusicAuditSnapshot } from "../src/music-audit.js";
 import { createMediaMcpServer } from "../src/server.js";
 
 async function fixture() {
@@ -66,6 +66,18 @@ function sha256(data: Uint8Array) {
 
 function syncSafe(value: number) {
   return Buffer.from([(value >>> 21) & 0x7f, (value >>> 14) & 0x7f, (value >>> 7) & 0x7f, value & 0x7f]);
+}
+
+function id3Track({ album, albumArtist, genre, title = "Track" }: { album: string; albumArtist: string; genre: string; title?: string }) {
+  const frame = (id: string, value: string) => {
+    const body = Buffer.concat([Buffer.from([3]), Buffer.from(value)]);
+    const header = Buffer.alloc(10);
+    header.write(id, 0, "ascii");
+    header.writeUInt32BE(body.length, 4);
+    return Buffer.concat([header, body]);
+  };
+  const body = Buffer.concat([frame("TIT2", title), frame("TALB", album), frame("TPE2", albumArtist), frame("TCON", genre)]);
+  return Buffer.concat([Buffer.from("ID3\x03\x00\x00", "binary"), syncSafe(body.length), body]);
 }
 
 function id3WithPictures(pictures: Buffer[]) {
@@ -363,22 +375,123 @@ describe("music audit pagination and MCP contract", () => {
     assertScalarViewMetrics(result.view);
   });
 
-  it("registers all eight read-only audit tools with bounded schemas", async () => {
+  it("registers all nine read-only audit tools with bounded schemas", async () => {
     const server = createMediaMcpServer();
     const client = new Client({ name: "music-audit-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const listed = await client.listTools();
     const tools = new Map(listed.tools.map((tool) => [tool.name, tool]));
-    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_detail", "music_album_artwork_preview"]) assert.ok(tools.has(name), name);
+    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_verify", "music_album_audit_detail", "music_album_artwork_preview"]) assert.ok(tools.has(name), name);
     assert.equal((tools.get("music_audit_start")?.inputSchema as any)?.properties && Object.keys((tools.get("music_audit_start")?.inputSchema as any).properties).length, 0);
     assert.equal((tools.get("music_audit_issues")?.inputSchema as any).properties.limit.maximum, 100);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.offset.default, 0);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.limit.default, 50);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.limit.maximum, 200);
+    const verifySchema = tools.get("music_album_audit_verify")?.inputSchema as any;
+    const verifyIds = verifySchema.properties.albumIds;
+    assert.equal(verifySchema.additionalProperties, false);
+    assert.equal(verifyIds.minItems, 1);
+    assert.equal(verifyIds.maxItems, 25);
     assert.deepEqual(Object.keys((tools.get("music_album_artwork_preview")?.inputSchema as any).properties), ["albumId", "source", "index"]);
     assert.equal((tools.get("music_album_artwork_preview")?.inputSchema as any).properties.index.default, 0);
+    const duplicate = await client.callTool({ name: "music_album_audit_verify", arguments: { albumIds: ["alb_0123456789abcdef01234567", "alb_0123456789abcdef01234567"] } }) as any;
+    assert.equal(duplicate.isError, true);
+    const extra = await client.callTool({ name: "music_album_audit_verify", arguments: { albumIds: ["alb_0123456789abcdef01234567"], path: "/tmp" } }) as any;
+    assert.equal(extra.isError, true);
     await Promise.all([client.close(), server.close()]);
+  });
+});
+
+describe("targeted music album verification", () => {
+  it("rescans only selected directories, observes live changes, recomputes findings, and preserves full-scan files", async () => {
+    const files = await fixture();
+    files.config.cooldownSeconds = 86_400;
+    const selectedDirectory = path.join(files.root, "Selected Artist", "Selected Album");
+    const unselectedDirectory = path.join(files.root, "Other Artist", "Other Album");
+    await mkdir(selectedDirectory, { recursive: true });
+    await mkdir(unselectedDirectory, { recursive: true });
+    await writeFile(path.join(selectedDirectory, "01.mp3"), id3Track({ album: "Selected Album", albumArtist: "Selected Artist", genre: "Rock" }));
+    await writeFile(path.join(unselectedDirectory, "01.mp3"), id3Track({ album: "Other Album", albumArtist: "Other Artist", genre: "Pop" }));
+    const cover = await sharp({ create: { width: 800, height: 800, channels: 3, background: "#123456" } }).png().toBuffer();
+    await writeFile(path.join(selectedDirectory, "cover.png"), cover);
+    const baseline = await scanMusicLibrary(files.config, "baseline-scan", "2026-09-15T00:00:00.000Z");
+    const selected = baseline.albums.find((album) => album.album === "Selected Album")!;
+    assert.ok(selected);
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), `${JSON.stringify(baseline)}\n`);
+    const state = `${JSON.stringify({ schemaVersion: 1, scanId: "full-scan-in-progress", status: "running", startedAt: "2026-09-15T01:00:00.000Z", warnings: [], errors: [] })}\n`;
+    await writeFile(path.join(files.cacheDir, "scan-state.json"), state);
+    const snapshotBytes = await readFile(path.join(files.cacheDir, "snapshot.json"));
+    const stateBytes = await readFile(path.join(files.cacheDir, "scan-state.json"));
+
+    await writeFile(path.join(selectedDirectory, "01.mp3"), id3Track({ album: "Selected Album", albumArtist: "Selected Artist", genre: "Jazz" }));
+    await unlink(path.join(selectedDirectory, "cover.png"));
+    const outside = path.join(files.temp, "must-not-be-read.mp3");
+    await writeFile(outside, id3Track({ album: "Outside", albumArtist: "Outside", genre: "Metal" }));
+    await unlink(path.join(unselectedDirectory, "01.mp3"));
+    await symlink(outside, path.join(unselectedDirectory, "01.mp3"));
+
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+    const result = await service.verifyAlbums([selected.id]) as any;
+    assert.equal(result.status, "completed");
+    assert.equal(result.baselineScanId, "baseline-scan");
+    assert.equal(result.progress.discoveredAudio, 1);
+    assert.equal(result.progress.discoveredImages, 0);
+    assert.equal(result.albums.length, 1);
+    assert.deepEqual(result.albums[0].live.tracks[0].genres, ["Jazz"]);
+    assert.equal(result.albums[0].changes.genresChanged, true);
+    assert.equal(result.albums[0].changes.artworkChanged, true);
+    assert.ok(result.albums[0].changes.findingsAdded.includes("art_missing"));
+    assert.ok(result.albums[0].changes.findingsResolved.includes("art_sidecar_only"));
+    assert.ok(result.albums[0].findings.some((finding: any) => finding.type === "art_missing"));
+    assert.deepEqual(await readFile(path.join(files.cacheDir, "snapshot.json")), snapshotBytes);
+    assert.deepEqual(await readFile(path.join(files.cacheDir, "scan-state.json")), stateBytes);
+  });
+
+  it("fails closed for identity drift, missing data, and the targeted scan limit", async () => {
+    const files = await fixture();
+    const directory = path.join(files.root, "Artist", "Album");
+    await mkdir(directory, { recursive: true });
+    const trackPath = path.join(directory, "01.mp3");
+    await writeFile(trackPath, id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock" }));
+    const baseline = await scanMusicLibrary(files.config, "baseline", "2026-09-15T00:00:00.000Z");
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
+    const albumId = baseline.albums[0]!.id;
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+
+    await writeFile(trackPath, id3Track({ album: "Renamed Album", albumArtist: "Artist", genre: "Rock" }));
+    const mismatch = await service.verifyAlbums([albumId]) as any;
+    assert.equal(mismatch.status, "failed");
+    assert.ok(mismatch.albums[0].errors.some((error: any) => error.code === "identity_mismatch"));
+
+    await unlink(trackPath);
+    const missing = await service.verifyAlbums([albumId]) as any;
+    assert.equal(missing.status, "failed");
+    assert.ok(missing.albums[0].errors.some((error: any) => error.code === "missing_data"));
+
+    await writeFile(trackPath, id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock" }));
+    await writeFile(path.join(directory, "cover.png"), Buffer.alloc(1024));
+    const limited = await new MusicAuditService({ ...files.config, maxFiles: 1 }, { mountInfoPath: files.mountInfoPath }).verifyAlbums([albumId]) as any;
+    assert.equal(limited.status, "failed");
+    assert.equal(limited.failure.code, "scan_limit");
+    assert.deepEqual(limited.albums, []);
+  });
+
+  it("rejects invalid, duplicate, unknown, and more than 25 album IDs", async () => {
+    const files = await fixture();
+    await mkdir(files.cacheDir);
+    const completed = snapshot(files.config, "baseline", "2026-09-15T00:00:00.000Z");
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(completed));
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+    const albumId = completed.albums[0]!.id;
+    await assert.rejects(service.verifyAlbums([]), /1 to 25/);
+    await assert.rejects(service.verifyAlbums([albumId, albumId]), /unique/);
+    await assert.rejects(service.verifyAlbums(["not-an-album-id"]), /opaque/);
+    await assert.rejects(service.verifyAlbums(["alb_ffffffffffffffffffffffff"]), /not found/);
+    const tooMany = Array.from({ length: 26 }, (_, index) => `alb_${index.toString(16).padStart(24, "0")}`);
+    await assert.rejects(service.verifyAlbums(tooMany), /1 to 25/);
   });
 });
 

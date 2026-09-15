@@ -60,6 +60,18 @@ empty label. Successful tools with renderable data should use `success`.
   conservative normalized key, counts, and up to five representative albums;
   clients must not assume comma- or semicolon-delimited tags were split. Empty
   and whitespace-only values are omitted and count as missing genres.
+- `music_album_audit_verify` accepts only `albumIds`: 1–25 unique opaque IDs
+  issued by the latest completed full audit. A successful call returns
+  `verificationId`, `baselineScanId`, `status`, ISO timing plus `durationMs`,
+  bounded scan `progress`, scalar summary counts, and one result per requested
+  album. Each album includes baseline identity, current live details, recomputed
+  `findings`, genre/artwork/finding change flags, and typed `errors`. Clients must
+  treat any non-`verified` album or top-level `failed` status as a failed-closed
+  result. The tool never accepts paths and never updates the baseline snapshot,
+  full-scan state, or cooldown. Unknown/duplicate IDs and unsafe shared selection
+  boundaries are tool errors; live identity mismatch/split/merge, missing/path
+  drift, and unreadable selected data are explicit report errors. A safety or
+  2,500-file scan-limit failure returns no partial album results.
 - `music_album_artwork_preview` accepts only `albumId`, `source` (`embedded` or
   `sidecar`), and a nonnegative `index`. Success returns exactly two MCP content
   parts: a concise JSON text envelope followed by an `image/jpeg` image part.
