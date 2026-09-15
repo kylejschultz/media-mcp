@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, createReadStream } from "node:fs";
+import { constants as fsConstants } from "node:fs";
 import { access, lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { disableTypes, imageSize, types as imageTypes } from "image-size";
@@ -821,26 +821,6 @@ export class MusicAuditService {
     } finally {
       activePreviews -= 1;
     }
-  }
-
-  async remediationSnapshot() {
-    await this.initialize();
-    if (!this.config.enabled) throw new Error("Music audit is disabled");
-    const capabilities = await this.capabilities();
-    if (!(capabilities.readOnlyMount as { verified: boolean }).verified) throw new Error("Configured music root is not positively verified read-only");
-    const parsed = JSON.parse(await readFile(this.snapshotFile, "utf8")) as MusicAuditSnapshot;
-    if (parsed.schemaVersion !== MUSIC_AUDIT_SCHEMA_VERSION || parsed.status !== "completed" || parsed.root !== this.config.root) {
-      throw new Error("The current completed music audit snapshot is unavailable or incompatible");
-    }
-    this.snapshot = parsed;
-    return parsed;
-  }
-
-  async remediationFileSha256(relativePath: string) {
-    const source = await this.verifiedSourcePath(relativePath);
-    const digest = createHash("sha256");
-    for await (const chunk of createReadStream(source)) digest.update(chunk);
-    return digest.digest("hex");
   }
 
   /** Test/controlled shutdown hook: waits for the current background scan. */
