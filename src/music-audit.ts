@@ -137,10 +137,20 @@ type ScanState = {
 };
 
 type SidecarsByDirectory = Map<string, ArtworkAudit[]>;
+type DiscoveredMusicFiles = { audio: string[]; images: string[] };
 type AuditDeps = {
   mountInfoPath?: string;
   scanner?: (config: MusicAuditConfig, scanId: string, startedAt: string, onProgress?: (progress: MusicAuditProgress) => void) => Promise<MusicAuditSnapshot>;
   previewer?: (data: Buffer) => Promise<{ data: Buffer; originalWidth: number; originalHeight: number; width: number; height: number }>;
+};
+
+const TARGETED_AUDIT_MAX_ALBUMS = 25;
+const TARGETED_AUDIT_MAX_FILES = 2_500;
+
+type VerificationError = {
+  code: "identity_mismatch" | "identity_split" | "identity_merge" | "missing_data" | "path_drift" | "unreadable_metadata" | "unreadable_artwork";
+  message: string;
+  paths?: string[];
 };
 
 export type ArtworkPreview = {
@@ -336,7 +346,7 @@ async function artwork(data: Uint8Array, source: ArtworkAudit["source"], maxImag
   }
 }
 
-async function walk(root: string, maxFiles: number) {
+async function walk(root: string, maxFiles: number): Promise<DiscoveredMusicFiles> {
   const audio: string[] = [];
   const images: string[] = [];
   const directories = [root];
@@ -358,6 +368,56 @@ async function walk(root: string, maxFiles: number) {
   return { audio: audio.sort(), images: images.sort() };
 }
 
+function relativePath(root: string, absolute: string) {
+  return path.relative(root, absolute).split(path.sep).join("/");
+}
+
+function withinRoot(root: string, absolute: string) {
+  return absolute !== root && absolute.startsWith(`${root}${path.sep}`);
+}
+
+function pathContains(parent: string, child: string) {
+  const relative = path.posix.relative(parent, child);
+  return relative === "" || (relative !== ".." && !relative.startsWith("../") && !path.posix.isAbsolute(relative));
+}
+
+async function walkSelectedDirectories(root: string, directories: string[], maxFiles: number): Promise<DiscoveredMusicFiles> {
+  const audio = new Set<string>();
+  const images = new Set<string>();
+  const pending = [...new Set(directories)].map((relativeDirectory) => {
+    const directory = path.resolve(root, relativeDirectory);
+    if (directory !== root && !withinRoot(root, directory)) throw new Error(`Selected directory escapes the configured music root: ${relativeDirectory}`);
+    return directory;
+  });
+  const visited = new Set<string>();
+
+  while (pending.length > 0) {
+    const directory = pending.pop()!;
+    if (visited.has(directory)) continue;
+    const linkStat = await lstat(directory);
+    if (linkStat.isSymbolicLink()) throw new Error(`Selected directory is a symlink: ${relativePath(root, directory)}`);
+    const canonical = await realpath(directory);
+    if (canonical !== directory || (canonical !== root && !withinRoot(root, canonical))) throw new Error(`Selected directory contains a symlink or escapes the configured music root: ${relativePath(root, directory)}`);
+    if (!linkStat.isDirectory()) throw new Error(`Selected directory is not a directory: ${relativePath(root, directory)}`);
+    visited.add(directory);
+
+    for (const entry of await readdir(directory, { withFileTypes: true })) {
+      const absolute = path.join(directory, entry.name);
+      if (entry.isSymbolicLink()) throw new Error(`Selected data contains a symlink: ${relativePath(root, absolute)}`);
+      if (entry.isDirectory()) pending.push(absolute);
+      else if (entry.isFile()) {
+        const canonicalFile = await realpath(absolute);
+        if (canonicalFile !== absolute || !withinRoot(root, canonicalFile)) throw new Error(`Selected file contains a symlink or escapes the configured music root: ${relativePath(root, absolute)}`);
+        const extension = path.extname(entry.name).toLowerCase();
+        if (AUDIO_EXTENSIONS.has(extension)) audio.add(absolute);
+        else if (IMAGE_EXTENSIONS.has(extension)) images.add(absolute);
+        if (audio.size + images.size > maxFiles) throw new Error(`Targeted music audit file limit exceeded (${maxFiles})`);
+      }
+    }
+  }
+  return { audio: [...audio].sort(), images: [...images].sort() };
+}
+
 function sanitizedError(error: unknown, root: string) {
   return (error instanceof Error ? error.message : String(error)).replaceAll(root, "<music-root>");
 }
@@ -374,11 +434,10 @@ async function mapConcurrent<T, R>(items: T[], concurrency: number, callback: (i
   return results;
 }
 
-export async function scanMusicLibrary(config: MusicAuditConfig, scanId: string, startedAt: string, onProgress: (progress: MusicAuditProgress) => void = () => {}): Promise<MusicAuditSnapshot> {
+async function scanMusicFiles(config: MusicAuditConfig, files: DiscoveredMusicFiles, scanId: string, startedAt: string, onProgress: (progress: MusicAuditProgress) => void = () => {}): Promise<MusicAuditSnapshot> {
   const progress: MusicAuditProgress = { phase: "discovering", processedAudio: 0, processedImages: 0, failedMetadata: 0, failedImages: 0 };
   const report = () => onProgress({ ...progress });
   report();
-  const files = await walk(config.root, config.maxFiles);
   Object.assign(progress, { phase: "sidecars" as const, discoveredAudio: files.audio.length, discoveredImages: files.images.length });
   report();
   const warnings: string[] = [];
@@ -471,6 +530,15 @@ export async function scanMusicLibrary(config: MusicAuditConfig, scanId: string,
     warnings: warnings.length > 100 ? [...warnings.slice(0, 99), `${warnings.length - 99} additional metadata warnings omitted`] : warnings,
     errors: [],
   };
+}
+
+export async function scanMusicLibrary(config: MusicAuditConfig, scanId: string, startedAt: string, onProgress: (progress: MusicAuditProgress) => void = () => {}): Promise<MusicAuditSnapshot> {
+  return scanMusicFiles(config, await walk(config.root, config.maxFiles), scanId, startedAt, onProgress);
+}
+
+async function scanSelectedMusicDirectories(config: MusicAuditConfig, directories: string[], scanId: string, startedAt: string, onProgress: (progress: MusicAuditProgress) => void = () => {}) {
+  const maxFiles = Math.min(config.maxFiles, TARGETED_AUDIT_MAX_FILES);
+  return scanMusicFiles(config, await walkSelectedDirectories(config.root, directories, maxFiles), scanId, startedAt, onProgress);
 }
 
 async function atomicJson(file: string, value: unknown) {
@@ -716,6 +784,143 @@ export class MusicAuditService {
       summaryData: { uniqueGenres: totalUniqueGenres, taggedTracks: totalTaggedTracks, albumsRepresented: totalAlbumsRepresented, scanId: this.snapshot.scanId },
       empty: rows.length === 0,
     }, this.snapshot.warnings, this.snapshot.errors);
+  }
+
+  private async snapshotForVerification() {
+    if (this.snapshot) return this.snapshot;
+    try {
+      const parsed = JSON.parse(await readFile(this.snapshotFile, "utf8")) as MusicAuditSnapshot;
+      if (parsed.schemaVersion === MUSIC_AUDIT_SCHEMA_VERSION && parsed.status === "completed" && parsed.root === this.config.root) {
+        this.snapshot = parsed;
+        return parsed;
+      }
+    } catch {}
+    throw new Error("No completed music audit snapshot is available");
+  }
+
+  async verifyAlbums(albumIds: string[]) {
+    if (!this.config.enabled) throw new Error("Music audit is disabled; set MUSIC_AUDIT_ENABLED=true");
+    if (albumIds.length < 1 || albumIds.length > TARGETED_AUDIT_MAX_ALBUMS) throw new Error(`albumIds must contain 1 to ${TARGETED_AUDIT_MAX_ALBUMS} IDs`);
+    if (new Set(albumIds).size !== albumIds.length) throw new Error("albumIds must contain unique IDs");
+    if (albumIds.some((albumId) => !/^alb_[a-f0-9]{24}$/.test(albumId))) throw new Error("albumIds must contain only opaque scanner-generated album IDs");
+
+    const baseline = await this.snapshotForVerification();
+    const selected = albumIds.map((albumId) => {
+      const album = baseline.albums.find((candidate) => candidate.id === albumId);
+      if (!album) throw new Error(`Album audit ID was not found in baseline snapshot ${baseline.scanId}: ${albumId}`);
+      return album;
+    });
+    const selectedIds = new Set(albumIds);
+    const selectedDirectories = [...new Set(selected.flatMap((album) => album.directories))].sort();
+    const overlapsSelectedBoundary = (directory: string) => selectedDirectories.some((selectedDirectory) => pathContains(selectedDirectory, directory) || pathContains(directory, selectedDirectory));
+    const boundaryConflict = baseline.albums.find((album) => !selectedIds.has(album.id) && album.tracks.some((track) => overlapsSelectedBoundary(track.directory)));
+    if (boundaryConflict) throw new Error(`Selected directories also contain unselected baseline album ${boundaryConflict.id}; select all albums sharing that boundary`);
+
+    const capabilities = await this.capabilities();
+    if (!(capabilities.root as { readable: boolean }).readable || !(capabilities.root as { canonicalMatchesConfigured: boolean }).canonicalMatchesConfigured) throw new Error("Configured music root is not readable or contains a symlinked path component");
+    if (!(capabilities.readOnlyMount as { verified: boolean }).verified) throw new Error("Configured music root is not positively verified read-only or contains a writable descendant mount");
+
+    const verificationId = randomUUID();
+    const startedAt = new Date().toISOString();
+    const startedMs = Date.now();
+    let liveSnapshot: MusicAuditSnapshot;
+    try {
+      liveSnapshot = await scanSelectedMusicDirectories(this.config, selectedDirectories, verificationId, startedAt);
+    } catch (error) {
+      const message = sanitizedError(error, this.config.root);
+      const code = /file limit exceeded/i.test(message) ? "scan_limit"
+        : /symlink|escapes/i.test(message) ? "symlink_or_path_escape"
+          : /ENOENT|not a directory/i.test(message) ? "missing_data"
+            : "unreadable_data";
+      const completedAt = new Date().toISOString();
+      return response("Targeted music verification failed closed", {
+        verificationId,
+        baselineScanId: baseline.scanId,
+        status: "failed",
+        startedAt,
+        completedAt,
+        durationMs: Date.now() - startedMs,
+        requestedAlbumIds: albumIds,
+        progress: { phase: "discovering", processedAudio: 0, processedImages: 0, failedMetadata: 0, failedImages: 0 },
+        albums: [],
+        failure: { code, message },
+        summaryData: { requestedAlbums: albumIds.length, verifiedAlbums: 0, failedAlbums: albumIds.length, tracks: 0, artworkFiles: 0, findings: 0 },
+      }, [], [message]);
+    }
+
+    const baselineOwnerByTrack = new Map(baseline.albums.flatMap((album) => album.tracks.map((track) => [track.path, album.id] as const)));
+    const selectedBaselinePaths = new Set(selected.flatMap((album) => album.tracks.map((track) => track.path)));
+    const liveByTrack = new Map(liveSnapshot.albums.flatMap((album) => album.tracks.map((track) => [track.path, album] as const)));
+    const verificationAlbums = selected.map((baselineAlbum) => {
+      const errors: VerificationError[] = [];
+      const baselinePaths = new Set(baselineAlbum.tracks.map((track) => track.path));
+      const associated = [...new Set(baselineAlbum.tracks.map((track) => liveByTrack.get(track.path)?.id).filter((id): id is string => Boolean(id)))];
+      const liveAlbum = liveSnapshot.albums.find((album) => album.id === baselineAlbum.id) ?? (associated.length === 1 ? liveSnapshot.albums.find((album) => album.id === associated[0]) : undefined);
+      const missingPaths = [...baselinePaths].filter((trackPath) => !liveByTrack.has(trackPath)).sort();
+      const unexpectedPaths = [...liveByTrack.keys()].filter((trackPath) => !selectedBaselinePaths.has(trackPath) && baselineAlbum.directories.some((directory) => pathContains(directory, path.posix.dirname(trackPath)))).sort();
+      if (missingPaths.length > 0) errors.push({ code: "missing_data", message: `${missingPaths.length} baseline track(s) are missing`, paths: missingPaths });
+      if (unexpectedPaths.length > 0) errors.push({ code: "path_drift", message: `${unexpectedPaths.length} unexpected live track(s) were found`, paths: unexpectedPaths });
+      if (associated.length > 1) errors.push({ code: "identity_split", message: `Baseline tracks now resolve to ${associated.length} album identities` });
+      else if (associated.length === 1 && associated[0] !== baselineAlbum.id) errors.push({ code: "identity_mismatch", message: `Live album identity ${associated[0]} does not match baseline ${baselineAlbum.id}` });
+      else if (associated.length === 0 && missingPaths.length < baselinePaths.size) errors.push({ code: "identity_mismatch", message: "Live tracks do not resolve to an album identity" });
+
+      if (liveAlbum) {
+        const mergedOwners = new Set(liveAlbum.tracks.map((track) => baselineOwnerByTrack.get(track.path)).filter((id): id is string => Boolean(id)));
+        if (mergedOwners.size > 1) errors.push({ code: "identity_merge", message: `Live album combines tracks from ${mergedOwners.size} baseline albums` });
+        const liveDirectories = [...new Set(liveAlbum.directories)].sort();
+        if (JSON.stringify(liveDirectories) !== JSON.stringify([...baselineAlbum.directories].sort())) errors.push({ code: "path_drift", message: "Live album directories differ from the baseline snapshot" });
+        const unreadableTracks = liveAlbum.tracks.filter((track) => track.metadataError).map((track) => track.path);
+        if (unreadableTracks.length > 0) errors.push({ code: "unreadable_metadata", message: `${unreadableTracks.length} selected track(s) could not be parsed`, paths: unreadableTracks });
+        const unreadableArtwork = [...liveAlbum.sidecars, ...liveAlbum.tracks.flatMap((track) => track.embeddedArt)].filter((art) => !art.readable);
+        if (unreadableArtwork.length > 0) errors.push({ code: "unreadable_artwork", message: `${unreadableArtwork.length} selected artwork item(s) could not be read` });
+      }
+
+      const baselineFindings = baseline.issues.filter((item) => item.albumId === baselineAlbum.id);
+      const liveFindings = liveAlbum ? liveSnapshot.issues.filter((item) => item.albumId === liveAlbum.id) : [];
+      const baselineTypes = new Set(baselineFindings.map((item) => item.type));
+      const liveTypes = new Set(liveFindings.map((item) => item.type));
+      const genreSignature = (album: AuditedAlbum) => album.tracks.map((track) => [track.path, track.genres] as const).sort((a, b) => a[0].localeCompare(b[0]));
+      const artworkSignature = (album: AuditedAlbum) => ({
+        embedded: album.tracks.flatMap((track) => track.embeddedArt.map((art) => [track.path, art.sha256, art.width, art.height, art.readable])),
+        sidecars: album.sidecars.map((art) => [art.filename, art.sha256, art.width, art.height, art.readable]),
+      });
+      return {
+        albumId: baselineAlbum.id,
+        status: errors.length === 0 ? "verified" : "failed",
+        baseline: { keySource: baselineAlbum.keySource, album: baselineAlbum.album, albumArtist: baselineAlbum.albumArtist, year: baselineAlbum.year, directories: baselineAlbum.directories, trackCount: baselineAlbum.tracks.length, findings: baselineFindings },
+        live: liveAlbum,
+        findings: liveFindings,
+        changes: liveAlbum ? {
+          genresChanged: JSON.stringify(genreSignature(baselineAlbum)) !== JSON.stringify(genreSignature(liveAlbum)),
+          artworkChanged: JSON.stringify(artworkSignature(baselineAlbum)) !== JSON.stringify(artworkSignature(liveAlbum)),
+          findingsAdded: [...liveTypes].filter((type) => !baselineTypes.has(type)).sort(),
+          findingsResolved: [...baselineTypes].filter((type) => !liveTypes.has(type)).sort(),
+        } : null,
+        errors,
+      };
+    });
+    const failedAlbums = verificationAlbums.filter((album) => album.status === "failed").length;
+    const completedAt = new Date().toISOString();
+    const errorMessages = verificationAlbums.flatMap((album) => album.errors.map((error) => `${album.albumId}: ${error.message}`)).slice(0, 100);
+    return response(failedAlbums === 0 ? `Verified ${verificationAlbums.length} album(s) against live files` : `Targeted music verification failed for ${failedAlbums} album(s)`, {
+      verificationId,
+      baselineScanId: baseline.scanId,
+      status: failedAlbums === 0 ? "completed" : "failed",
+      startedAt,
+      completedAt,
+      durationMs: Date.now() - startedMs,
+      requestedAlbumIds: albumIds,
+      progress: liveSnapshot.progress,
+      albums: verificationAlbums,
+      summaryData: {
+        requestedAlbums: albumIds.length,
+        verifiedAlbums: verificationAlbums.length - failedAlbums,
+        failedAlbums,
+        tracks: liveSnapshot.summary.tracks,
+        artworkFiles: liveSnapshot.progress.processedImages,
+        findings: liveSnapshot.issues.length,
+      },
+    }, liveSnapshot.warnings, errorMessages);
   }
 
   async albumDetail(albumId: string) {
