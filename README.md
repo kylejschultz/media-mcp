@@ -101,93 +101,6 @@ still accept no paths or URLs: they resolve an opaque album ID and indexed
 snapshot artwork under the fixed read-only root, reject symlinks/escapes or
 changed bytes, and return only a downscaled JPEG (never original artwork).
 
-### Optional beets-flask remediation overlay
-
-`Dockerfile.beets-flask-remediation` derives from the exact pinned upstream
-image digest and only overlays an authenticated Quart blueprint. It does not
-change the media-mcp image or its `/music-library:ro` audit mount. Build it with:
-
-```bash
-docker build -f Dockerfile.beets-flask-remediation --target test .
-docker build -f Dockerfile.beets-flask-remediation --target runtime -t beets-flask-remediation .
-```
-
-The complete Compose example is
-[`docs/docker-compose.remediation.example.yml`](docs/docker-compose.remediation.example.yml).
-The overlay requires all of the following:
-
-- `BEETS_REMEDIATION_ENABLED=true`; mutation routes additionally require
-  `BEETS_REMEDIATION_WRITES_ENABLED=true` and maintenance mode
-  `BEETS_REMEDIATION_MAINTENANCE=true`.
-- A shared random bearer token and a separate shared manifest HMAC key, each at
-  least 32 characters. Media-mcp uses `BEETS_FLASK_REMEDIATION_TOKEN`; both
-  containers use `BEETS_REMEDIATION_MANIFEST_HMAC_KEY`.
-- `BEETS_REMEDIATION_APPROVED_SCAN_ID` set to the one reviewed audit snapshot.
-- `BEETS_REMEDIATION_GENRES_JSON` set to the explicit canonical JSON string
-  array, for example `["Hip-Hop & Rap","Rock"]`.
-- A writable library at `BEETS_REMEDIATION_LIBRARY_ROOT` and a private writable
-  `BEETS_REMEDIATION_BACKUP_ROOT` outside the served library but on the same
-  filesystem. The latter stores full originals, staging data, and durable
-  journals until finalize. Successful apply and rollback re-read each changed
-  item through the installed beets APIs and synchronize the album genre and
-  `artpath` in the existing beets library database.
-
-Media-mcp first resolves reviewed opaque album IDs against its latest snapshot,
-verifies its `/music-library:ro` mount, hashes current track/sidecar files, and
-stores a signed canonical manifest under `/config/music-remediation`. Preview
-and apply accept only that opaque manifest ID; media-mcp reloads its file,
-verifies the HMAC/digest and latest snapshot, and sends the signed envelope to
-the overlay. CAA decisions require a separately reviewed `expected_sha256`;
-`music_remediation_art_digest` obtains it without returning image bytes.
-
-Preview is authenticated and never writes. Apply, rollback, recovery, and
-finalize additionally require both MCP gates (`ALLOW_REQUESTS=true` and
-`ALLOW_WRITE_BEETS_FLASK=true`) and the overlay's independent
-`BEETS_REMEDIATION_WRITES_ENABLED=true` plus
-`BEETS_REMEDIATION_MAINTENANCE=true`; bearer authentication alone never enables
-a mutation. Keep the MCP endpoint private: these gates are safeguards, not user
-authentication. Maintenance mode is an operator assertion. The overlay also checks the installed
-beets-flask RQ queues and refuses mutations whenever queued, scheduled, or
-started jobs exist or Redis state cannot be verified; it rechecks immediately
-before filesystem replacement and database synchronization. Operators must
-still stop external writers/watchdogs and keep them idle through the transaction,
-then disable both overlay mutation gates afterward. The overlay cannot force
-unrelated processes to honor its writer lock.
-Finalize is intentionally separate and its public MCP input is only the opaque
-transaction ID. Media-mcp reads the overlay's authenticated expected state,
-loads a real distinct completed audit snapshot, rehashes every track and
-sidecar through its verified read-only root, requires exact album/track/ordered
-genre/embedded-art/sidecar equality, and HMAC-signs the canonical derived
-attestation. The overlay verifies that signature in constant time and requires
-exact journal equality before deleting backups; bearer-authenticated callers
-cannot fabricate finalize state. A restart leaves any
-applying/applied/rolling-back/rolled-back journal non-finalized and blocks
-another apply until explicit recovery, rollback, or finalize. Replacement and
-rollback are recoverable per file, not album- or batch-atomic. Rollback persists
-`rolling_back` before restoring anything and its explicit recovery path resumes
-mixed restored/applied files plus database restoration using only committed,
-reverified backups. Each original is written to a same-directory temporary,
-fsynced, hash-verified, atomically committed, and journaled before its
-corresponding live replacement. v1 fails closed unless an audited album has
-exactly one existing supported sidecar. Apply uses a caller-generated operation
-ID so status can recover the transaction after a timeout. Interrupted
-`finalizing` reconciliation runs at mutation-enabled startup or a finalize
-retry; status does not perform backup deletion.
-
-The writer rejects symlinks and hardlinks, uses directory-FD replacement with
-`O_NOFOLLOW` where practical, and revalidates file plus parent inode/device
-identities immediately before replacement. Residual review risk: a hostile
-actor able to rename or swap a validated parent directory in the final syscall
-window can still race pathname topology. The service UID must be the trusted
-library owner, and no other user or process may have concurrent rename/write
-access to those directories during maintenance.
-
-CAA downloads follow only the release-bound Internet Archive handoff. The
-current service uses an exact `archive.org/download/mbid-…` redirect followed by
-an exact `dn<digits>.ca.archive.org/0/items/mbid-…` object handoff; any different
-host/path, private DNS answer, query, fragment, port, credentials, or further
-redirect is rejected.
-
 If the GHCR package is private, log in on Unraid first:
 
 ```bash
@@ -367,14 +280,6 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `music_genre_distribution` - page and search exact raw genre tags with conservative normalized keys, track/album counts, and up to five representative albums; compound tags are preserved rather than split.
 - `music_album_audit_detail` - return metadata, artwork hashes/dimensions, and findings for an opaque album ID from the current snapshot.
 - `music_album_artwork_preview` - return a bounded JPEG preview for one indexed embedded or sidecar snapshot variant when the separate preview gate is enabled; callers provide only an opaque album ID, source, and nonnegative index.
-- `music_remediation_art_digest` - securely fetch/decode one exact CAA object and return its SHA-256 and dimensions without image bytes.
-- `music_remediation_prepare` - derive, sign, and store a canonical manifest from latest-snapshot album IDs plus reviewed decisions.
-- `music_remediation_preview` - load one opaque stored manifest ID and validate exact intended changes without writing.
-- `music_remediation_apply` - apply one stored manifest using a caller-generated idempotency ID and return post-state hashes; replacement is recoverable per file, not batch-atomic.
-- `music_remediation_rollback` - restore byte-identical originals for one opaque transaction ID; requires both write gates.
-- `music_remediation_finalize` - accept only an opaque transaction ID, derive and sign exact state from a distinct completed audit, then delete the exact transaction backup; requires both write gates.
-- `music_remediation_status` - return bounded authenticated status for an operation/transaction ID after a timeout without exposing paths or bytes.
-- `music_remediation_recover` - explicitly restore an interrupted apply or resume a `rolling_back` transaction after exact journal/live-state checks; requires every mutation gate.
 - `subwave_status` - show read-only Subwave station health, now-playing, queue, and admin-read availability.
 - `subwave_now_playing` - show current Subwave track, station context, DJ persona, listeners, and stream descriptor.
 - `subwave_state` - show Subwave current queue, recent history, DJ log, and station state.
@@ -393,13 +298,13 @@ additive; clients can ignore it and consume the raw result fields instead.
 
 SABnzbd has a different API shape from the Arr apps, so its queue/history tools normalize the output separately.
 Jellyfin support is read-only and uses `JELLYFIN_URL` plus `JELLYFIN_API_KEY` with Jellyfin's MediaBrowser token auth.
-Ordinary beets-flask support is read-only and uses `BEETS_FLASK_URL`; the optional remediation tools use the separately pinned overlay and shared bearer token. slskd support is read-only and uses `SLSKD_URL` plus `SLSKD_API_KEY`.
+beets-flask support is read-only and uses `BEETS_FLASK_URL`. slskd support is read-only and uses `SLSKD_URL` plus `SLSKD_API_KEY`.
 Navidrome support is read-only in the current release and uses `NAVIDROME_URL`, `NAVIDROME_USER`, and `NAVIDROME_PASS` against the Subsonic API.
 Subwave public station reads use `SUBWAVE_URL`. Admin-read and write tools such as `subwave_search`, `subwave_recent`, `subwave_upsert_show`, and `subwave_update_schedule` also require `SUBWAVE_ADMIN_USER` and `SUBWAVE_ADMIN_PASS`.
 The default runtime is read-only. Search and preview tools are safe by default;
 request/write tools refuse to run unless `ALLOW_REQUESTS=true`.
-Service-specific write tools stay behind explicit gates such as
-`ALLOW_WRITE_NAVIDROME`, `ALLOW_WRITE_SUBWAVE`, and `ALLOW_WRITE_BEETS_FLASK`.
+Future service-specific write tools must stay behind explicit gates such as
+`ALLOW_WRITE_NAVIDROME` and `ALLOW_WRITE_SUBWAVE`.
 The generated stack model is used to interpret expected stack-specific warnings,
 such as Lidarr Completed Download Handling being disabled while beets-flask owns
 music import/tagging.

@@ -1,9 +1,5 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
-import {
-  MusicRemediationService,
-  musicRemediationPreparationSchema,
-} from "./beets-remediation.js";
 import { configuredApps } from "./config.js";
 import {
   beetsFlaskStatus,
@@ -135,7 +131,6 @@ export function createMediaMcpServer(auditService: MusicAuditService = musicAudi
     name: "media-mcp",
     version: serverVersion,
   });
-  const remediationService = new MusicRemediationService(auditService);
 
   server.registerTool(
     "media_stack_overview",
@@ -726,93 +721,6 @@ export function createMediaMcpServer(auditService: MusicAuditService = musicAudi
         return errorText(error);
       }
     },
-  );
-
-  server.registerTool(
-    "music_remediation_art_digest",
-    {
-      title: "Review Music Remediation Artwork",
-      description: "Fetch one exact release-bound CAA object through the remediation overlay and return its decoded digest/shape without image bytes.",
-      inputSchema: {
-        musicbrainzReleaseId: z.string().uuid(),
-        url: z.string().regex(/^https:\/\/coverartarchive\.org\/release\/[a-f0-9-]{36}\/[0-9]+\.(jpg|png)$/i),
-      },
-    },
-    tool(({ musicbrainzReleaseId, url }) => remediationService.artDigest(musicbrainzReleaseId, url)),
-  );
-
-  server.registerTool(
-    "music_remediation_prepare",
-    {
-      title: "Prepare Music Remediation",
-      description: "Build, sign, and store a canonical manifest from latest-snapshot album IDs plus reviewed genre/art decisions without writing the library.",
-      inputSchema: musicRemediationPreparationSchema.shape,
-    },
-    tool((args) => remediationService.prepare(args)),
-  );
-
-  server.registerTool(
-    "music_remediation_preview",
-    {
-      title: "Preview Music Remediation",
-      description: "Reload and validate one stored signed manifest by opaque ID, then return exact diffs without writing.",
-      inputSchema: { manifestId: z.string().regex(/^mrm_[a-f0-9]{24}$/) },
-    },
-    tool(({ manifestId }) => remediationService.preview(manifestId)),
-  );
-
-  server.registerTool(
-    "music_remediation_apply",
-    {
-      title: "Apply Music Remediation",
-      description: "Apply one stored signed manifest with a client-generated idempotency ID. Requires both beets-flask write gates.",
-      inputSchema: {
-        manifestId: z.string().regex(/^mrm_[a-f0-9]{24}$/),
-        operationId: z.string().regex(/^[a-f0-9]{32}$/),
-      },
-    },
-    tool(({ manifestId, operationId }) => remediationService.apply(manifestId, operationId)),
-  );
-
-  const remediationTransactionInput = { transactionId: z.string().regex(/^[a-f0-9]{32}$/) };
-  server.registerTool(
-    "music_remediation_rollback",
-    {
-      title: "Rollback Music Remediation",
-      description: "Restore an unchanged applied transaction after exact post-state verification. Requires both beets-flask write gates.",
-      inputSchema: remediationTransactionInput,
-    },
-    tool(({ transactionId }) => remediationService.rollback(transactionId)),
-  );
-
-  server.registerTool(
-    "music_remediation_finalize",
-    {
-      title: "Finalize Music Remediation",
-      description: "Derive a signed attestation from a distinct completed audit, then delete only the exact backup. Requires both beets-flask write gates.",
-      inputSchema: remediationTransactionInput,
-    },
-    tool(({ transactionId }) => remediationService.finalize(transactionId)),
-  );
-
-  server.registerTool(
-    "music_remediation_status",
-    {
-      title: "Music Remediation Status",
-      description: "Return bounded authenticated transaction status for timeout recovery without exposing paths or backup bytes.",
-      inputSchema: { transactionId: z.string().regex(/^[a-f0-9]{32}$/).optional() },
-    },
-    tool(({ transactionId }) => remediationService.transaction(transactionId, false)),
-  );
-
-  server.registerTool(
-    "music_remediation_recover",
-    {
-      title: "Recover Music Remediation",
-      description: "Restore a journaled interrupted apply or resume a rolling rollback after exact state/hash checks. Requires both MCP write gates and both overlay mutation gates.",
-      inputSchema: remediationTransactionInput,
-    },
-    tool(({ transactionId }) => remediationService.transaction(transactionId, true)),
   );
 
   server.registerTool(

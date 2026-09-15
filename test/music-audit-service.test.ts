@@ -110,23 +110,6 @@ async function artworkFixture() {
 }
 
 describe("music audit capabilities and lifecycle", () => {
-  it("exposes snapshot-bound file hashing only through the verified read-only root", async () => {
-    const files = await fixture();
-    const directory = path.join(files.root, "Artist", "Album");
-    await mkdir(directory, { recursive: true });
-    const bytes = Buffer.from("track-bytes");
-    await writeFile(path.join(directory, "01.flac"), bytes);
-    await mkdir(files.cacheDir);
-    const completed = snapshot(files.config, "b652dc32-62d7-49a8-8f57-a63c002cb72f", "2026-01-01T00:00:00.000Z");
-    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(completed));
-    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
-    assert.equal((await service.remediationSnapshot()).scanId, completed.scanId);
-    assert.equal(await service.remediationFileSha256("Artist/Album/01.flac"), sha256(bytes));
-    await symlink(path.join(directory, "01.flac"), path.join(directory, "linked.flac"));
-    await assert.rejects(service.remediationFileSha256("Artist/Album/linked.flac"), /symlink/);
-    await assert.rejects(service.remediationFileSha256("../../outside.flac"), /escapes/);
-  });
-
   it("does not start unless enabled and positively read-only", async () => {
     const files = await fixture();
     const disabled = new MusicAuditService({ ...files.config, enabled: false }, { mountInfoPath: files.mountInfoPath });
