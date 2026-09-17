@@ -115,6 +115,7 @@ const subwaveScheduleInput = {
 const musicAuditIssueType = z.enum(MUSIC_AUDIT_ISSUE_TYPES);
 const musicAlbumAuditVerifyInput = z.object({
   albumIds: z.array(z.string().regex(/^alb_[a-f0-9]{24}$/)).min(1).max(25).refine((ids) => new Set(ids).size === ids.length, "albumIds must be unique"),
+  detail: z.enum(["summary", "full"]).default("summary"),
 }).strict();
 
 type ToolHandler = (args: any) => Promise<unknown> | unknown;
@@ -695,7 +696,22 @@ export function createMediaMcpServer(auditService: MusicAuditService = musicAudi
       description: "Independently rescan only snapshot-selected album directories and recompute live metadata, artwork, and findings without changing the baseline full-audit snapshot or scan state.",
       inputSchema: musicAlbumAuditVerifyInput,
     },
-    tool(({ albumIds }) => auditService.verifyAlbums(albumIds)),
+    tool(({ albumIds, detail }) => auditService.verifyAlbums(albumIds, detail)),
+  );
+
+  server.registerTool(
+    "music_album_audit_verification_detail",
+    {
+      title: "Music Album Audit Verification Detail",
+      description: "Return one bounded page of persisted verification evidence for one album.",
+      inputSchema: {
+        verificationId: z.string().uuid(),
+        albumId: z.string().regex(/^alb_[a-f0-9]{24}$/),
+        offset: z.number().int().min(0).default(0),
+        limit: z.number().int().min(1).max(100).default(25),
+      },
+    },
+    tool((args) => auditService.verificationDetail(args)),
   );
 
   server.registerTool(

@@ -60,12 +60,19 @@ empty label. Successful tools with renderable data should use `success`.
   conservative normalized key, counts, and up to five representative albums;
   clients must not assume comma- or semicolon-delimited tags were split. Empty
   and whitespace-only values are omitted and count as missing genres.
-- `music_album_audit_verify` accepts only `albumIds`: 1–25 unique opaque IDs
-  issued by the latest completed full audit. A successful call returns
-  `verificationId`, `baselineScanId`, `status`, ISO timing plus `durationMs`,
-  bounded scan `progress`, scalar summary counts, and one result per requested
-  album. Each album includes baseline identity, current live details, recomputed
-  `findings`, genre/artwork/finding change flags, and typed `errors`. Clients must
+- `music_album_audit_verify` accepts `albumIds` (1–25 unique opaque IDs issued
+  by the latest completed full audit) and optional `detail` (`summary`, the
+  default, or `full`). One call deterministically processes the entire batch.
+  Its bounded response contains IDs/status, requested/verified/failed and
+  track/finding counts, warnings/errors, compact per-album status/change/finding
+  code/error counts, and verification-artifact metadata. Summary responses never
+  inline baseline/live records, tracks, artwork, or other full evidence. Every
+  attempt atomically writes the complete report beneath the configured audit
+  cache in `verification-artifacts/`; the response supplies its relative path,
+  byte size, SHA-256, and album-specific retrieval arguments. `full` still does
+  not inline a whole batch and instead makes the retrieval guidance explicit.
+  Use `music_album_audit_verification_detail` with the verification and album IDs
+  to page through at most 100 normalized evidence items. Clients must
   treat any non-`verified` album or top-level `failed` status as a failed-closed
   result. The tool never accepts paths and never updates the baseline snapshot,
   full-scan state, or cooldown. It recursively scans snapshot-resolved boundaries

@@ -121,6 +121,10 @@ async function artworkFixture() {
   return { ...files, completed, first, second, directory };
 }
 
+async function verificationArtifact(cacheDir: string, result: any) {
+  return JSON.parse(await readFile(path.join(cacheDir, result.artifact.path), "utf8"));
+}
+
 describe("music audit capabilities and lifecycle", () => {
   it("does not start unless enabled and positively read-only", async () => {
     const files = await fixture();
@@ -375,14 +379,14 @@ describe("music audit pagination and MCP contract", () => {
     assertScalarViewMetrics(result.view);
   });
 
-  it("registers all nine read-only audit tools with bounded schemas", async () => {
+  it("registers all read-only audit tools with bounded schemas", async () => {
     const server = createMediaMcpServer();
     const client = new Client({ name: "music-audit-test", version: "1.0.0" });
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)]);
     const listed = await client.listTools();
     const tools = new Map(listed.tools.map((tool) => [tool.name, tool]));
-    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_verify", "music_album_audit_detail", "music_album_artwork_preview"]) assert.ok(tools.has(name), name);
+    for (const name of ["music_audit_capabilities", "music_audit_start", "music_audit_status", "music_audit_summary", "music_audit_issues", "music_genre_distribution", "music_album_audit_verify", "music_album_audit_verification_detail", "music_album_audit_detail", "music_album_artwork_preview"]) assert.ok(tools.has(name), name);
     assert.equal((tools.get("music_audit_start")?.inputSchema as any)?.properties && Object.keys((tools.get("music_audit_start")?.inputSchema as any).properties).length, 0);
     assert.equal((tools.get("music_audit_issues")?.inputSchema as any).properties.limit.maximum, 100);
     assert.equal((tools.get("music_genre_distribution")?.inputSchema as any).properties.offset.default, 0);
@@ -393,6 +397,9 @@ describe("music audit pagination and MCP contract", () => {
     assert.equal(verifySchema.additionalProperties, false);
     assert.equal(verifyIds.minItems, 1);
     assert.equal(verifyIds.maxItems, 25);
+    assert.equal(verifySchema.properties.detail.default, "summary");
+    assert.deepEqual(verifySchema.properties.detail.enum, ["summary", "full"]);
+    assert.equal((tools.get("music_album_audit_verification_detail")?.inputSchema as any).properties.limit.maximum, 100);
     assert.deepEqual(Object.keys((tools.get("music_album_artwork_preview")?.inputSchema as any).properties), ["albumId", "source", "index"]);
     assert.equal((tools.get("music_album_artwork_preview")?.inputSchema as any).properties.index.default, 0);
     const duplicate = await client.callTool({ name: "music_album_audit_verify", arguments: { albumIds: ["alb_0123456789abcdef01234567", "alb_0123456789abcdef01234567"] } }) as any;
@@ -404,6 +411,78 @@ describe("music audit pagination and MCP contract", () => {
 });
 
 describe("targeted music album verification", () => {
+  it("returns compact 3/10 album summaries and persists checksummed full evidence", async () => {
+    const files = await fixture();
+    for (let index = 0; index < 10; index += 1) {
+      const directory = path.join(files.root, `Artist ${index}`, `Album ${index}`);
+      await mkdir(directory, { recursive: true });
+      await writeFile(path.join(directory, "01.mp3"), id3Track({ album: `Album ${index}`, albumArtist: `Artist ${index}`, genre: "Rock" }));
+    }
+    const baseline = await scanMusicLibrary(files.config, "summary-baseline", "2026-09-15T00:00:00.000Z");
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+
+    for (const count of [3, 10]) {
+      const result = await service.verifyAlbums(baseline.albums.slice(0, count).map((album) => album.id)) as any;
+      const serialized = JSON.stringify(result);
+      assert.ok(Buffer.byteLength(serialized) < 8 * 1024, `${count}-album summary was ${Buffer.byteLength(serialized)} bytes`);
+      assert.equal(result.summaryData.requestedAlbums, count);
+      assert.equal(result.summaryData.verifiedAlbums, count);
+      assert.equal(result.albums.length, count);
+      assert.ok(result.albums.every((album: any) => !Object.hasOwn(album, "baseline") && !Object.hasOwn(album, "live") && !Object.hasOwn(album, "tracks") && !Object.hasOwn(album, "artwork")));
+      assert.ok(result.albums.every((album: any) => typeof album.albumId === "string" && album.status === "verified" && Array.isArray(album.findingCodes)));
+      const forbiddenKeys = new Set(["baseline", "live", "sidecars", "embeddedArt", "artwork"]);
+      const walkKeys = (value: unknown): void => {
+        if (Array.isArray(value)) return value.forEach(walkKeys);
+        if (!value || typeof value !== "object") return;
+        for (const [key, child] of Object.entries(value)) {
+          assert.equal(forbiddenKeys.has(key), false, `summary included forbidden key ${key}`);
+          if (key === "tracks") assert.equal(Array.isArray(child), false, "summary included a track-level array");
+          walkKeys(child);
+        }
+      };
+      walkKeys(result);
+      const bytes = await readFile(path.join(files.cacheDir, result.artifact.path));
+      assert.equal(result.artifact.format, "media-mcp.music-verification.v1");
+      assert.equal(result.artifact.bytes, bytes.byteLength);
+      assert.equal(result.artifact.sha256, sha256(bytes));
+      const artifact = JSON.parse(bytes.toString("utf8"));
+      assert.equal(artifact.artifactFormat, "media-mcp.music-verification.v1");
+      assert.equal(artifact.albums.length, count);
+      assert.ok(artifact.albums[0].baseline.tracks);
+      assert.ok(artifact.albums[0].live.tracks);
+      assert.equal((await readdir(path.join(files.cacheDir, "verification-artifacts"))).some((name) => name.endsWith(".tmp")), false);
+    }
+  });
+
+  it("keeps failures visible in summaries and pages album-specific evidence", async () => {
+    const files = await fixture();
+    const directory = path.join(files.root, "Artist", "Album");
+    await mkdir(directory, { recursive: true });
+    const track = path.join(directory, "01.mp3");
+    await writeFile(track, id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock" }));
+    const baseline = await scanMusicLibrary(files.config, "failure-baseline", "2026-09-15T00:00:00.000Z");
+    await mkdir(files.cacheDir);
+    await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
+    await unlink(track);
+    const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
+    const result = await service.verifyAlbums([baseline.albums[0]!.id], "full") as any;
+    assert.equal(result.status, "failed");
+    assert.equal(result.albums[0].albumId, baseline.albums[0]!.id);
+    assert.equal(result.albums[0].status, "failed");
+    assert.ok(result.albums[0].errorCount > 0);
+    assert.ok(result.errors.some((message: string) => message.includes(baseline.albums[0]!.id)));
+    assert.equal(result.fullDetail.tool, "music_album_audit_verification_detail");
+    assert.equal(Object.hasOwn(result.albums[0], "baseline"), false);
+
+    const page = await service.verificationDetail({ verificationId: result.verificationId, albumId: baseline.albums[0]!.id, offset: 0, limit: 1 }) as any;
+    assert.equal(page.limit, 1);
+    assert.equal(page.items.length, 1);
+    assert.ok(page.total > 1);
+    assert.equal(page.artifact.sha256, result.artifact.sha256);
+  });
+
   it("rescans only selected directories, observes live changes, recomputes findings, and preserves full-scan files", async () => {
     const files = await fixture();
     files.config.cooldownSeconds = 86_400;
@@ -434,17 +513,19 @@ describe("targeted music album verification", () => {
 
     const service = new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath });
     const result = await service.verifyAlbums([selected.id]) as any;
+    const artifact = await verificationArtifact(files.cacheDir, result);
     assert.equal(result.status, "completed");
-    assert.equal(result.baselineScanId, "baseline-scan");
-    assert.equal(result.progress.discoveredAudio, 1);
-    assert.equal(result.progress.discoveredImages, 0);
+    assert.equal(Object.hasOwn(result, "baselineScanId"), false);
+    assert.equal(artifact.baselineScanId, "baseline-scan");
+    assert.equal(artifact.progress.discoveredAudio, 1);
+    assert.equal(artifact.progress.discoveredImages, 0);
     assert.equal(result.albums.length, 1);
-    assert.deepEqual(result.albums[0].live.tracks[0].genres, ["Jazz"]);
-    assert.equal(result.albums[0].changes.genresChanged, true);
-    assert.equal(result.albums[0].changes.artworkChanged, true);
-    assert.ok(result.albums[0].changes.findingsAdded.includes("art_missing"));
-    assert.ok(result.albums[0].changes.findingsResolved.includes("art_sidecar_only"));
-    assert.ok(result.albums[0].findings.some((finding: any) => finding.type === "art_missing"));
+    assert.deepEqual(artifact.albums[0].live.tracks[0].genres, ["Jazz"]);
+    assert.equal(artifact.albums[0].changes.genresChanged, true);
+    assert.equal(artifact.albums[0].changes.artworkChanged, true);
+    assert.ok(artifact.albums[0].changes.findingsAdded.includes("art_missing"));
+    assert.ok(artifact.albums[0].changes.findingsResolved.includes("art_sidecar_only"));
+    assert.ok(artifact.albums[0].findings.some((finding: any) => finding.type === "art_missing"));
     assert.deepEqual(await readFile(path.join(files.cacheDir, "snapshot.json")), snapshotBytes);
     assert.deepEqual(await readFile(path.join(files.cacheDir, "scan-state.json")), stateBytes);
   });
@@ -465,11 +546,12 @@ describe("targeted music album verification", () => {
     await writeFile(path.join(files.cacheDir, "snapshot.json"), JSON.stringify(baseline));
 
     const result = await new MusicAuditService(files.config, { mountInfoPath: files.mountInfoPath }).verifyAlbums([baseline.albums[0]!.id]) as any;
+    const artifact = await verificationArtifact(files.cacheDir, result);
     assert.equal(result.status, "completed");
-    assert.equal(result.progress.discoveredAudio, 2);
-    assert.equal(result.progress.discoveredImages, 2);
-    assert.equal(result.albums[0].live.tracks.length, 2);
-    assert.equal(result.albums[0].live.sidecars.length, 2);
+    assert.equal(artifact.progress.discoveredAudio, 2);
+    assert.equal(artifact.progress.discoveredImages, 2);
+    assert.equal(artifact.albums[0].live.tracks.length, 2);
+    assert.equal(artifact.albums[0].live.sidecars.length, 2);
   });
 
   it("reports unexpected nested tracks and fails closed on nested symlinks", async () => {
@@ -488,19 +570,21 @@ describe("targeted music album verification", () => {
     const addedTrack = path.join(nested, "02.mp3");
     await writeFile(addedTrack, id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock", title: "Two" }));
     const drift = await service.verifyAlbums([albumId]) as any;
+    const driftArtifact = await verificationArtifact(files.cacheDir, drift);
     assert.equal(drift.status, "failed");
-    const pathDrift = drift.albums[0].errors.find((error: any) => error.code === "path_drift" && error.paths);
+    const pathDrift = driftArtifact.albums[0].errors.find((error: any) => error.code === "path_drift" && error.paths);
     assert.deepEqual(pathDrift.paths, ["Artist/Album/Bonus/02.mp3"]);
-    assert.equal(drift.progress.discoveredAudio, 2);
+    assert.equal(driftArtifact.progress.discoveredAudio, 2);
 
     await unlink(addedTrack);
     const outside = path.join(files.temp, "outside.mp3");
     await writeFile(outside, id3Track({ album: "Outside", albumArtist: "Outside", genre: "Metal" }));
     await symlink(outside, path.join(nested, "linked.mp3"));
     const unsafe = await service.verifyAlbums([albumId]) as any;
+    const unsafeArtifact = await verificationArtifact(files.cacheDir, unsafe);
     assert.equal(unsafe.status, "failed");
-    assert.equal(unsafe.failure.code, "symlink_or_path_escape");
-    assert.deepEqual(unsafe.albums, []);
+    assert.equal(unsafeArtifact.failure.code, "symlink_or_path_escape");
+    assert.deepEqual(unsafeArtifact.albums, []);
   });
 
   it("rejects selected and unselected album boundaries that overlap by containment", async () => {
@@ -531,20 +615,23 @@ describe("targeted music album verification", () => {
 
     await writeFile(trackPath, id3Track({ album: "Renamed Album", albumArtist: "Artist", genre: "Rock" }));
     const mismatch = await service.verifyAlbums([albumId]) as any;
+    const mismatchArtifact = await verificationArtifact(files.cacheDir, mismatch);
     assert.equal(mismatch.status, "failed");
-    assert.ok(mismatch.albums[0].errors.some((error: any) => error.code === "identity_mismatch"));
+    assert.ok(mismatchArtifact.albums[0].errors.some((error: any) => error.code === "identity_mismatch"));
 
     await unlink(trackPath);
     const missing = await service.verifyAlbums([albumId]) as any;
+    const missingArtifact = await verificationArtifact(files.cacheDir, missing);
     assert.equal(missing.status, "failed");
-    assert.ok(missing.albums[0].errors.some((error: any) => error.code === "missing_data"));
+    assert.ok(missingArtifact.albums[0].errors.some((error: any) => error.code === "missing_data"));
 
     await writeFile(trackPath, id3Track({ album: "Album", albumArtist: "Artist", genre: "Rock" }));
     await writeFile(path.join(directory, "cover.png"), Buffer.alloc(1024));
     const limited = await new MusicAuditService({ ...files.config, maxFiles: 1 }, { mountInfoPath: files.mountInfoPath }).verifyAlbums([albumId]) as any;
+    const limitedArtifact = await verificationArtifact(files.cacheDir, limited);
     assert.equal(limited.status, "failed");
-    assert.equal(limited.failure.code, "scan_limit");
-    assert.deepEqual(limited.albums, []);
+    assert.equal(limitedArtifact.failure.code, "scan_limit");
+    assert.deepEqual(limitedArtifact.albums, []);
   });
 
   it("rejects invalid, duplicate, unknown, and more than 25 album IDs", async () => {

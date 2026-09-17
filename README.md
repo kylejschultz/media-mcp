@@ -106,7 +106,12 @@ snapshot-resolved directory boundaries, deduplicates overlapping selected roots,
 never writes a replacement snapshot or scan-state file, and fails closed on
 unknown identities, selected/unselected boundary overlap, split/merged identity,
 missing/path-drifted data, symlinks/escapes, unreadable data, or its 2,500-file
-hard limit.
+hard limit. The default `detail: "summary"` response is compact and contains no
+baseline/live track or artwork arrays. Complete evidence is always atomically
+stored under the configured cache's `verification-artifacts/` directory with
+byte-size and SHA-256 metadata; use the album-specific paginated verification
+detail tool to retrieve it. `detail: "full"` remains bounded and returns explicit
+retrieval guidance rather than inlining a whole batch.
 
 If the GHCR package is private, log in on Unraid first:
 
@@ -285,7 +290,8 @@ additive; clients can ignore it and consume the raw result fields instead.
 - `music_audit_summary` - return compact counts from the latest completed snapshot.
 - `music_audit_issues` - page and filter objective findings and clearly labeled review candidates.
 - `music_genre_distribution` - page and search exact raw genre tags with conservative normalized keys, track/album counts, and up to five representative albums; compound tags are preserved rather than split.
-- `music_album_audit_verify` - independently rescan 1–25 snapshot-selected albums and return a bounded report linked to `baselineScanId`, with timing/progress, live details, recomputed findings/change flags, and explicit identity/missing/drift errors; it does not replace the full snapshot or alter full-scan state/cooldown.
+- `music_album_audit_verify` - independently rescan 1–25 snapshot-selected albums in one batch; default to a compact summary and persist complete checksummed evidence without replacing the full snapshot or altering full-scan state/cooldown.
+- `music_album_audit_verification_detail` - retrieve one bounded page of persisted verification evidence for one album and verification ID.
 - `music_album_audit_detail` - return metadata, artwork hashes/dimensions, and findings for an opaque album ID from the current snapshot.
 - `music_album_artwork_preview` - return a bounded JPEG preview for one indexed embedded or sidecar snapshot variant when the separate preview gate is enabled; callers provide only an opaque album ID, source, and nonnegative index.
 - `subwave_status` - show read-only Subwave station health, now-playing, queue, and admin-read availability.
