@@ -1,6 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
 import { constants as fsConstants } from "node:fs";
-import { access, lstat, mkdir, readFile, readdir, realpath, rename, stat, writeFile } from "node:fs/promises";
+import { access, lstat, mkdir, open, readFile, readdir, realpath, rename, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { disableTypes, imageSize, types as imageTypes } from "image-size";
 import { parseFile } from "music-metadata";
@@ -13,6 +13,7 @@ const AUDIO_EXTENSIONS = new Set([".aac", ".aif", ".aiff", ".ape", ".flac", ".m4
 const IMAGE_EXTENSIONS = new Set([".bmp", ".gif", ".jpeg", ".jpg", ".png", ".webp"]);
 const BROAD_GENRES = new Set(["alternative", "blues", "classical", "country", "dance", "electronic", "folk", "hip hop", "jazz", "metal", "pop", "r&b", "rap", "reggae", "rock", "soundtrack"]);
 const SUPPORTED_IMAGE_TYPES = new Set(["bmp", "gif", "jpg", "png", "webp"]);
+const VERIFICATION_ARTIFACT_FORMAT = "media-mcp.music-verification.v1";
 // Disable ICNS/JXL/HEIF and every unsupported parser to mitigate image-size's published infinite-loop advisories.
 disableTypes(imageTypes.filter((type) => !SUPPORTED_IMAGE_TYPES.has(type)));
 
@@ -541,11 +542,36 @@ async function scanSelectedMusicDirectories(config: MusicAuditConfig, directorie
   return scanMusicFiles(config, await walkSelectedDirectories(config.root, directories, maxFiles), scanId, startedAt, onProgress);
 }
 
-async function atomicJson(file: string, value: unknown) {
+async function atomicFile(file: string, data: Uint8Array) {
   await mkdir(path.dirname(file), { recursive: true });
   const temporary = `${file}.${randomUUID()}.tmp`;
-  await writeFile(temporary, `${JSON.stringify(value)}\n`, { mode: 0o600 });
+  await writeFile(temporary, data, { mode: 0o600 });
   await rename(temporary, file);
+}
+
+async function atomicJson(file: string, value: unknown) {
+  await atomicFile(file, Buffer.from(`${JSON.stringify(value)}\n`));
+}
+
+async function durableAtomicFile(file: string, data: Uint8Array) {
+  const directory = path.dirname(file);
+  await mkdir(directory, { recursive: true });
+  const temporary = `${file}.${randomUUID()}.tmp`;
+  try {
+    const handle = await open(temporary, "wx", 0o600);
+    try {
+      await handle.writeFile(data);
+      await handle.sync();
+    } finally {
+      await handle.close();
+    }
+    await rename(temporary, file);
+    const directoryHandle = await open(directory, "r");
+    try { await directoryHandle.sync(); } finally { await directoryHandle.close(); }
+  } catch (error) {
+    await unlink(temporary).catch(() => {});
+    throw error;
+  }
 }
 
 async function inspectCache(cacheDir: string) {
@@ -596,6 +622,24 @@ export class MusicAuditService {
 
   private get snapshotFile() { return path.join(this.config.cacheDir, "snapshot.json"); }
   private get stateFile() { return path.join(this.config.cacheDir, "scan-state.json"); }
+  private verificationArtifactFile(verificationId: string) { return path.join(this.config.cacheDir, "verification-artifacts", `${verificationId}.json`); }
+
+  private async persistVerificationArtifact(verificationId: string, report: Record<string, unknown>) {
+    const data = Buffer.from(`${JSON.stringify(report)}\n`);
+    await durableAtomicFile(this.verificationArtifactFile(verificationId), data);
+    return {
+      format: VERIFICATION_ARTIFACT_FORMAT,
+      id: verificationId,
+      path: `verification-artifacts/${verificationId}.json`,
+      bytes: data.byteLength,
+      sha256: createHash("sha256").update(data).digest("hex"),
+      retrieval: {
+        tool: "music_album_audit_verification_detail",
+        arguments: { verificationId, albumId: "<albumId>", offset: 0, limit: 100 },
+        guidance: "Retrieve one album at a time; paginate evidence with offset and limit.",
+      },
+    };
+  }
 
   private initialize() {
     if (!this.initialization) this.initialization = (async () => {
@@ -798,7 +842,7 @@ export class MusicAuditService {
     throw new Error("No completed music audit snapshot is available");
   }
 
-  async verifyAlbums(albumIds: string[]) {
+  async verifyAlbums(albumIds: string[], detail: "summary" | "full" = "summary") {
     if (!this.config.enabled) throw new Error("Music audit is disabled; set MUSIC_AUDIT_ENABLED=true");
     if (albumIds.length < 1 || albumIds.length > TARGETED_AUDIT_MAX_ALBUMS) throw new Error(`albumIds must contain 1 to ${TARGETED_AUDIT_MAX_ALBUMS} IDs`);
     if (new Set(albumIds).size !== albumIds.length) throw new Error("albumIds must contain unique IDs");
@@ -833,7 +877,9 @@ export class MusicAuditService {
           : /ENOENT|not a directory/i.test(message) ? "missing_data"
             : "unreadable_data";
       const completedAt = new Date().toISOString();
-      return response("Targeted music verification failed closed", {
+      const report = {
+        artifactFormat: VERIFICATION_ARTIFACT_FORMAT,
+        schemaVersion: MUSIC_AUDIT_SCHEMA_VERSION,
         verificationId,
         baselineScanId: baseline.scanId,
         status: "failed",
@@ -845,7 +891,19 @@ export class MusicAuditService {
         albums: [],
         failure: { code, message },
         summaryData: { requestedAlbums: albumIds.length, verifiedAlbums: 0, failedAlbums: albumIds.length, tracks: 0, artworkFiles: 0, findings: 0 },
-      }, [], [message]);
+        warnings: [],
+        errors: [message],
+      };
+      const artifact = await this.persistVerificationArtifact(verificationId, report);
+      return {
+        verificationId,
+        status: "failed",
+        albums: albumIds.map((albumId) => ({ albumId, status: "failed", trackCount: 0, findingCount: 0, changeCounts: { genresChanged: 0, artworkChanged: 0, findingsAdded: 0, findingsResolved: 0 }, findingCodes: [], errorCount: 1 })),
+        summaryData: { requestedAlbums: albumIds.length, verifiedAlbums: 0, failedAlbums: albumIds.length, tracks: 0, findings: 0 },
+        artifact,
+        warnings: [],
+        errors: [message],
+      };
     }
 
     const baselineOwnerByTrack = new Map(baseline.albums.flatMap((album) => album.tracks.map((track) => [track.path, album.id] as const)));
@@ -887,7 +945,7 @@ export class MusicAuditService {
       return {
         albumId: baselineAlbum.id,
         status: errors.length === 0 ? "verified" : "failed",
-        baseline: { keySource: baselineAlbum.keySource, album: baselineAlbum.album, albumArtist: baselineAlbum.albumArtist, year: baselineAlbum.year, directories: baselineAlbum.directories, trackCount: baselineAlbum.tracks.length, findings: baselineFindings },
+        baseline: { keySource: baselineAlbum.keySource, album: baselineAlbum.album, albumArtist: baselineAlbum.albumArtist, year: baselineAlbum.year, directories: baselineAlbum.directories, trackCount: baselineAlbum.tracks.length, tracks: baselineAlbum.tracks, sidecars: baselineAlbum.sidecars, findings: baselineFindings },
         live: liveAlbum,
         findings: liveFindings,
         changes: liveAlbum ? {
@@ -902,7 +960,9 @@ export class MusicAuditService {
     const failedAlbums = verificationAlbums.filter((album) => album.status === "failed").length;
     const completedAt = new Date().toISOString();
     const errorMessages = verificationAlbums.flatMap((album) => album.errors.map((error) => `${album.albumId}: ${error.message}`)).slice(0, 100);
-    return response(failedAlbums === 0 ? `Verified ${verificationAlbums.length} album(s) against live files` : `Targeted music verification failed for ${failedAlbums} album(s)`, {
+    const report = {
+      artifactFormat: VERIFICATION_ARTIFACT_FORMAT,
+      schemaVersion: MUSIC_AUDIT_SCHEMA_VERSION,
       verificationId,
       baselineScanId: baseline.scanId,
       status: failedAlbums === 0 ? "completed" : "failed",
@@ -920,7 +980,96 @@ export class MusicAuditService {
         artworkFiles: liveSnapshot.progress.processedImages,
         findings: liveSnapshot.issues.length,
       },
-    }, liveSnapshot.warnings, errorMessages);
+      warnings: liveSnapshot.warnings,
+      errors: errorMessages,
+    };
+    const artifact = await this.persistVerificationArtifact(verificationId, report);
+    const albums = verificationAlbums.map((album) => ({
+      albumId: album.albumId,
+      status: album.status,
+      trackCount: album.live?.tracks.length ?? 0,
+      findingCount: album.findings.length,
+      changeCounts: {
+        genresChanged: album.changes?.genresChanged ? 1 : 0,
+        artworkChanged: album.changes?.artworkChanged ? 1 : 0,
+        findingsAdded: album.changes?.findingsAdded.length ?? 0,
+        findingsResolved: album.changes?.findingsResolved.length ?? 0,
+      },
+      findingCodes: [...new Set(album.findings.map((finding) => finding.type))].sort(),
+      errorCount: album.errors.length,
+    }));
+    return {
+      verificationId,
+      status: failedAlbums === 0 ? "completed" : "failed",
+      albums,
+      summaryData: {
+        requestedAlbums: albumIds.length,
+        verifiedAlbums: verificationAlbums.length - failedAlbums,
+        failedAlbums,
+        tracks: liveSnapshot.summary.tracks,
+        findings: liveSnapshot.issues.length,
+      },
+      artifact,
+      ...(detail === "full" ? { fullDetail: artifact.retrieval } : {}),
+      warnings: liveSnapshot.warnings,
+      errors: errorMessages,
+    };
+  }
+
+  async verificationDetail(args: { verificationId: string; albumId: string; offset?: number; limit?: number }) {
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/.test(args.verificationId)) throw new Error("verificationId must be a scanner-generated UUID");
+    if (!/^alb_[a-f0-9]{24}$/.test(args.albumId)) throw new Error("albumId must be an opaque scanner-generated album ID");
+    const offset = Math.max(0, Math.trunc(args.offset ?? 0));
+    const limit = Math.min(100, Math.max(1, Math.trunc(args.limit ?? 25)));
+    const file = this.verificationArtifactFile(args.verificationId);
+    const data = await readFile(file);
+    const report = JSON.parse(data.toString("utf8")) as { verificationId?: string; baselineScanId?: string; albums?: any[]; warnings?: string[]; errors?: string[] };
+    if (report.verificationId !== args.verificationId) throw new Error("Verification artifact ID does not match its contents");
+    const album = report.albums?.find((candidate) => candidate.albumId === args.albumId);
+    if (!album) throw new Error("Album audit ID was not found in the verification artifact");
+    const items: Array<Record<string, unknown>> = [];
+    const addTrack = (kind: string, track: AuditedTrack) => {
+      const { embeddedArt, ...metadata } = track;
+      items.push({ kind, value: metadata });
+      for (const art of embeddedArt) items.push({ kind: `${kind}_embedded_artwork`, trackPath: track.path, value: art });
+    };
+    for (const track of album.baseline?.tracks ?? []) addTrack("baseline_track", track);
+    for (const art of album.baseline?.sidecars ?? []) items.push({ kind: "baseline_sidecar_artwork", value: art });
+    for (const finding of album.baseline?.findings ?? []) {
+      const { paths = [], ...value } = finding;
+      items.push({ kind: "baseline_finding", value });
+      for (const itemPath of paths) items.push({ kind: "baseline_finding_path", findingId: finding.id, path: itemPath });
+    }
+    for (const track of album.live?.tracks ?? []) addTrack("live_track", track);
+    for (const art of album.live?.sidecars ?? []) items.push({ kind: "live_sidecar_artwork", value: art });
+    for (const finding of album.findings ?? []) {
+      const { paths = [], ...value } = finding;
+      items.push({ kind: "live_finding", value });
+      for (const itemPath of paths) items.push({ kind: "live_finding_path", findingId: finding.id, path: itemPath });
+    }
+    for (const error of album.errors ?? []) {
+      const { paths = [], ...value } = error;
+      items.push({ kind: "verification_error", value });
+      for (const itemPath of paths) items.push({ kind: "verification_error_path", code: error.code, path: itemPath });
+    }
+    const { baseline, live, findings, errors, ...albumSummary } = album;
+    return response(`Retrieved verification evidence for ${args.albumId}`, {
+      verificationId: args.verificationId,
+      baselineScanId: report.baselineScanId,
+      album: {
+        ...albumSummary,
+        baseline: baseline && { ...baseline, tracks: undefined, sidecars: undefined, findings: undefined },
+        live: live && { ...live, tracks: undefined, sidecars: undefined },
+        findingCount: findings?.length ?? 0,
+        errorCount: errors?.length ?? 0,
+      },
+      items: items.slice(offset, offset + limit),
+      total: items.length,
+      offset,
+      limit,
+      artifact: { id: args.verificationId, path: `verification-artifacts/${args.verificationId}.json`, bytes: data.byteLength, sha256: createHash("sha256").update(data).digest("hex") },
+      empty: items.length === 0,
+    }, report.warnings ?? [], report.errors ?? []);
   }
 
   async albumDetail(albumId: string) {
