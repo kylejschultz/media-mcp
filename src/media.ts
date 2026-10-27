@@ -969,7 +969,14 @@ export async function recentActivity(appName?: AppName, pageSize = 20) {
 }
 
 export async function calendar(appName: LibraryAppName, start: string, end: string) {
-  return arrGet(getApp(appName), "calendar", { start, end });
+  const entries = await arrGet<Array<Record<string, unknown> & { series?: { title?: string } }>>(
+    getApp(appName), "calendar", { start, end, includeSeries: appName === "sonarr" ? true : undefined },
+  );
+  if (appName !== "sonarr" || !Array.isArray(entries)) return entries;
+  return entries.map(({ series, ...episode }) => ({
+    ...episode,
+    ...(series?.title ? { seriesTitle: series.title } : {}),
+  }));
 }
 
 export async function wantedMissing(appName: LibraryAppName, pageSize = 20) {
