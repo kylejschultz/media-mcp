@@ -92,6 +92,7 @@ empty label. Successful tools with renderable data should use `success`.
   artwork-preview gate are enabled on a trusted/private endpoint.
 - Subwave tools return live station state, now-playing, streams, queue/history,
   and admin-read search/recent data when admin credentials are configured.
+- Sonarr calendar entries include `seriesTitle` from the actual upstream series metadata, separately from the episode `title`. Clients should use it to label the show; calendar entries do not inline unrelated series metadata.
 - Missing media tools return `services[]` with per-service `total` and sample
   items.
 - Import issue tools return `queueIssues`, `failedHistory`,
